@@ -677,7 +677,7 @@ class DotVectorDB:
                 raise RuntimeError("Database not opened")
             results = None
             async with AsyncTempVectorSpace(conn=self.conn, tids=temp_vector_space_names, lock=self.lock, memory=memoryHandler) as QueryWS:
-                results, tokens = await custom_func(**kwargs)
+                results, tokens = await custom_func(QueryWS, **kwargs)
             return results, tokens
         
                 
