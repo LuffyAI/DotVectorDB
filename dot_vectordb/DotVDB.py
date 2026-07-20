@@ -39,7 +39,6 @@ class DotVectorDB:
         self.conn: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
         
-
 ############################################################
 #   Functions For Opening and Closing DotVDB               # 
 ############################################################
