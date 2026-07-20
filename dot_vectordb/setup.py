@@ -10,7 +10,7 @@ setup(
     # Increase this for every PyPI release
     version="0.1.0",
 
-    description="A short description of my package",
+    description="An asynchronous vector and graph database built for the research paper DotRAG: Retrieval-Time Reasoning Along Paths",
 
     # Displayed on the PyPI project page
     long_description=(root / "README.md").read_text(encoding="utf-8"),

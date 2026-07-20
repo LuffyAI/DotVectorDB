@@ -1,6 +1,6 @@
 # DotVectorDB
 
-DotVectorDB is an asynchronous vector and graph database built for **DotRAG**. It combines document ingestion, text chunking, embeddings, SQLite vector search, entity extraction, relationship extraction, and graph-based retrieval.
+DotVectorDB is an asynchronous vector and graph database built for research paper **DotRAG: Retrieval-Time Reasoning Along Paths**. It combines document ingestion, text chunking, embeddings, SQLite vector search, entity extraction, relationship extraction, and graph-based retrieval.
 
 ## Features
 
