@@ -25,6 +25,16 @@ setup(
     # Minimum supported Python version
     python_requires=">=3.9",
 
+
+    include_package_data=True,
+
+    package_data={
+        "dot_vectordb": [
+            "compiled_vec1/vec1.so",
+            "schema/*.sql",
+        ],
+    },
+
     # Packages automatically installed with yours
     install_requires=[
         "pytest==9.0.3",
