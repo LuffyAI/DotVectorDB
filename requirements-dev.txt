@@ -1,3 +1,6 @@
 pytest==9.0.3
 pytest-asyncio==1.4.0
 ipykernel==7.2.0
+setuptools==82.0.1
+wheel==0.46.3
+twine==6.1.0
