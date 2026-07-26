@@ -20,7 +20,6 @@ import aiosqlite
 import asyncio
 import traceback
 BASE_DIR = Path(__file__).resolve().parent
-
 class DotVectorDB:
     def __init__(self, path: str, DIM: int, 
                  embedding_model: EmbeddingModel = OpenAIEmbeddingModel() , 
@@ -38,7 +37,6 @@ class DotVectorDB:
         self.hashing_func = hashing_func
         self.conn: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
-        
 ############################################################
 #   Functions For Opening and Closing DotVDB               # 
 ############################################################

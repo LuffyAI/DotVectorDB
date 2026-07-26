@@ -35,9 +35,7 @@ setup(
 
     # Packages automatically installed with yours
     install_requires=[
-        "pytest==9.0.3",
         "torch==2.10.0",
-        "pytest-asyncio==1.4.0",
         "aiosqlite==0.22.1",
         "sentence-transformers==5.5.1",
         "python-dotenv==1.2.2",
@@ -46,7 +44,6 @@ setup(
         "aiohttp==3.13.3",
         "tiktoken==0.13.0",
         "igraph==1.0.0",
-        "ipykernel==7.2.0",
         "pdfplumber==0.11.6",
         "python-docx==1.2.0",
         "python-pptx==1.0.2",
