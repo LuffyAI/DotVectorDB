@@ -1,5 +1,5 @@
 import hashlib
-from dot_vectordb.interfaces.HashingFunc import HashingFunc
+from dotvectordb.interfaces.HashingFunc import HashingFunc
 
 class SHA256HashingFunc(HashingFunc):
     def compute_hash(self, content: str) -> str:

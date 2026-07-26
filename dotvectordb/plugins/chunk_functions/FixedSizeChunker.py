@@ -1,6 +1,6 @@
 import tiktoken
-from dot_vectordb.interfaces.ChunkingFunc import ChunkingFunc
-from dot_vectordb.interfaces.HashingFunc import HashingFunc
+from dotvectordb.interfaces.ChunkingFunc import ChunkingFunc
+from dotvectordb.interfaces.HashingFunc import HashingFunc
 import os
 import traceback
 

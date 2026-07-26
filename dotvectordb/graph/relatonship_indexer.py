@@ -1,4 +1,4 @@
-from dot_vectordb.prompts.relationship_prompts import RELATIONSHIP_PROMPT, ENTITY_EXAMPLE, INPUT_EXAMPLE, OUTPUT_EXAMPLE, Relationship
+from dotvectordb.prompts.relationship_prompts import RELATIONSHIP_PROMPT, ENTITY_EXAMPLE, INPUT_EXAMPLE, OUTPUT_EXAMPLE, Relationship
 import json
 import traceback
 import asyncio

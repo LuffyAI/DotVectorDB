@@ -1,17 +1,17 @@
-from dot_vectordb.interfaces.EmbeddingModel import EmbeddingModel
-from dot_vectordb.interfaces.LanguageModel import LanguageModel
-from dot_vectordb.interfaces.ChunkingFunc import ChunkingFunc
-from dot_vectordb.interfaces.HashingFunc import HashingFunc
-from dot_vectordb.plugins.embedding_providers.openai_embeddings import OpenAIEmbeddingModel
-from dot_vectordb.plugins.llm_providers.openai_llms import OpenAiAgent
-from dot_vectordb.plugins.chunk_functions.FixedSizeChunker import FixedSizeChunker
-from dot_vectordb.plugins.hash_functions.hashfuncs import SHA256HashingFunc
-from dot_vectordb.plugins.loaders.TextConverter import DocumentTextExtractor
-from dot_vectordb.prompts.entity_prompts import DEFAULT_ENTITY_TYPES, isEntityTypesFormatCorrect
-from dot_vectordb.graph.entity_indexer import EntityIndexer
-from dot_vectordb.graph.relatonship_indexer import RelationshipIndexer
-from dot_vectordb.graph.graph_retriever import GraphRetriever
-from dot_vectordb.graph.TempVectorSpace import AsyncTempVectorSpace
+from dotvectordb.interfaces.EmbeddingModel import EmbeddingModel
+from dotvectordb.interfaces.LanguageModel import LanguageModel
+from dotvectordb.interfaces.ChunkingFunc import ChunkingFunc
+from dotvectordb.interfaces.HashingFunc import HashingFunc
+from dotvectordb.plugins.embedding_providers.openai_embeddings import OpenAIEmbeddingModel
+from dotvectordb.plugins.llm_providers.openai_llms import OpenAiAgent
+from dotvectordb.plugins.chunk_functions.FixedSizeChunker import FixedSizeChunker
+from dotvectordb.plugins.hash_functions.hashfuncs import SHA256HashingFunc
+from dotvectordb.plugins.loaders.TextConverter import DocumentTextExtractor
+from dotvectordb.prompts.entity_prompts import DEFAULT_ENTITY_TYPES, isEntityTypesFormatCorrect
+from dotvectordb.graph.entity_indexer import EntityIndexer
+from dotvectordb.graph.relatonship_indexer import RelationshipIndexer
+from dotvectordb.graph.graph_retriever import GraphRetriever
+from dotvectordb.graph.TempVectorSpace import AsyncTempVectorSpace
 import os
 from pathlib import Path
 from tqdm.asyncio import tqdm_asyncio

@@ -1,4 +1,4 @@
-from dot_vectordb.prompts.entity_prompts import ENTITY_RECOGNITION_PROMPT, ExtractedEntitiesResponse, INPUT_EXAMPLE, OUTPUT_EXAMPLE
+from dotvectordb.prompts.entity_prompts import ENTITY_RECOGNITION_PROMPT, ExtractedEntitiesResponse, INPUT_EXAMPLE, OUTPUT_EXAMPLE
 import json
 import traceback
 import asyncio

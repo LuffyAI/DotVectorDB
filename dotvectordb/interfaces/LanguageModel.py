@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Tuple, Optional
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dot_vectordb.interfaces.EmbeddingModel import EmbeddingModel
+from dotvectordb.interfaces.EmbeddingModel import EmbeddingModel
 from pydantic import BaseModel, Field
 import tiktoken
 import traceback

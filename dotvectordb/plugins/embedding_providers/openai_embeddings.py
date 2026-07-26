@@ -9,7 +9,7 @@ import numpy as np
 from dotenv import load_dotenv
 import os
 from collections.abc import Awaitable, Callable
-from dot_vectordb.interfaces.EmbeddingModel import EmbeddingModel, Embedding
+from dotvectordb.interfaces.EmbeddingModel import EmbeddingModel, Embedding
 load_dotenv()
 
 class OpenAIEmbeddingModel(EmbeddingModel):
