@@ -10,7 +10,7 @@ setup(
     # Increase this for every PyPI release
     version="0.1.0",
 
-    description="An asynchronous vector and graph database built for the research paper DotRAG: Retrieval-Time Reasoning Along Paths",
+    description="DotVectorDB is a simple, transparent vector and graph database that makes building GraphRAG pipelines easier without hiding the underlying process.",
 
     # Displayed on the PyPI project page
     long_description=(root / "README.md").read_text(encoding="utf-8"),
@@ -24,8 +24,6 @@ setup(
 
     # Minimum supported Python version
     python_requires=">=3.9",
-
-
     include_package_data=True,
 
     package_data={
