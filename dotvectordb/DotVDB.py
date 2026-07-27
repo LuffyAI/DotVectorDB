@@ -94,7 +94,7 @@ class DotVectorDB:
             raise RuntimeError("Database not opened")
         try:
             existing_entity_types = await self.get_entity_types()
-            if entity_types is None or isEntityTypesFormatCorrect(entity_types) is False:
+            if entity_types is None or await isEntityTypesFormatCorrect(entity_types) is False:
                 if verbose:
                     print("No valid entity types provided. Using default entity types.")
                 entity_types = DEFAULT_ENTITY_TYPES

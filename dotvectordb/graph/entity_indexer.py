@@ -300,6 +300,25 @@ class EntityIndexer:
                         )
 
                     await asyncio.sleep(async_cooldown)
+
+    ##########################################################################
+    #                Random Sampling For Entity Types                        # 
+    ########################################################################## 
+    async def get_random_sample_of_entities_by_type(self, entity_type, sample_size=5):
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT * FROM entity WHERE entity_type = ? ORDER BY RANDOM() LIMIT ?",
+                (entity_type, sample_size)
+            )
+            rows = await cursor.fetchall()
+            column_names = [column[0] for column in cursor.description]
+            await cursor.close()
+            entities = [
+                            dict(zip(column_names, row))
+                            for row in rows
+                        ]
+            return entities
+
         
     
     
