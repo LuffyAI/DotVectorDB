@@ -6,11 +6,9 @@ Wrapper for the OpenAI embedding provider. This calls the OpenAI API's embedding
 """
 import openai
 import numpy as np
-from dotenv import load_dotenv
 import os
 from collections.abc import Awaitable, Callable
 from dotvectordb.interfaces.EmbeddingModel import EmbeddingModel, Embedding
-load_dotenv()
 
 class OpenAIEmbeddingModel(EmbeddingModel):
     def __init__(

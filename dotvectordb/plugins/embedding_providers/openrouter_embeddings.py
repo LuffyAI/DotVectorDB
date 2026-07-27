@@ -6,11 +6,9 @@ Wrapper for the OpenRouter embedding provider. This calls the OpenRouter's API's
 """
 import aiohttp
 import numpy as np
-from dotenv import load_dotenv
 import os
 from collections.abc import Awaitable, Callable
 from dotvectordb.interfaces.EmbeddingModel import EmbeddingModel, Embedding
-load_dotenv()
 
 class OpenRouterEmbedding(EmbeddingModel):
     def __init__(

@@ -1,11 +1,9 @@
 import os
 from openai import AsyncOpenAI
-from dotenv import load_dotenv
 from typing import Any, Dict, List, Tuple, Optional
 from pydantic import BaseModel, Field
 import json
 from dotvectordb.interfaces.LanguageModel import LanguageModel, FinalResponse
-load_dotenv()
 
 class OpenRouterAgent(LanguageModel):
     def __init__(

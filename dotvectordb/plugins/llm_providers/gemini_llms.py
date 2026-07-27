@@ -1,5 +1,4 @@
 import os
-from dotenv import load_dotenv
 from typing import Any, Dict, List, Tuple, Optional
 from pydantic import BaseModel, Field
 import json
@@ -8,7 +7,6 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List, Optional
-load_dotenv()
 
 class GeminiAgent(LanguageModel):
     def __init__(
