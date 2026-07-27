@@ -27,7 +27,7 @@ setup(
     include_package_data=True,
 
     package_data={
-        "dot_vectordb": [
+        "dotvectordb": [
             "compiled_vec1/vec1.so",
             "schema/*.sql",
         ],
