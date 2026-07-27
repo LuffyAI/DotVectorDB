@@ -21,6 +21,34 @@ CREATE TABLE IF NOT EXISTS entity (
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
 );
 
+CREATE TRIGGER IF NOT EXISTS increment_entity_type_count
+AFTER INSERT ON entity
+BEGIN
+    UPDATE entity_types
+    SET num_entities = num_entities + 1
+    WHERE entity_type = NEW.entity_type;
+END;
+
+CREATE TRIGGER IF NOT EXISTS decrement_entity_type_count
+AFTER DELETE ON entity
+BEGIN
+    UPDATE entity_types
+    SET num_entities = MAX(num_entities - 1, 0)
+    WHERE entity_type = OLD.entity_type;
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_entity_type_count
+AFTER UPDATE OF entity_type ON entity
+WHEN OLD.entity_type <> NEW.entity_type
+BEGIN
+    UPDATE entity_types
+    SET num_entities = MAX(num_entities - 1, 0)
+    WHERE entity_type = OLD.entity_type;
+
+    UPDATE entity_types
+    SET num_entities = num_entities + 1
+    WHERE entity_type = NEW.entity_type;
+END;
 
 CREATE TABLE IF NOT EXISTS entity_extraction_jobs (
     job_id INTEGER NOT NULL,

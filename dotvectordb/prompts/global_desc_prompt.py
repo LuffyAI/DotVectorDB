@@ -1,0 +1,10 @@
+
+
+GLOBAL_DESCRIPTION_PROMPT = """
+
+
+
+
+
+
+"""
