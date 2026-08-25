@@ -22,7 +22,7 @@ import asyncio
 import traceback
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
-    def __init__(self, path: str, DIM: int, 
+    def __init__(self, path: str, 
                  embedding_model: EmbeddingModel = OpenAIEmbeddingModel() , 
                  language_model: LanguageModel = OpenAiAgent(), 
                  chunking_func: ChunkingFunc = FixedSizeChunker(hash_func=SHA256HashingFunc()),
@@ -30,7 +30,6 @@ class DotVectorDB:
                  tokenizer_name: str = os.getenv("TOKENIZER"),
                  verbose=False):
         self.path = path
-        self.DIM = DIM
         self.tokenizer_name = tokenizer_name
         self.embedding_model = embedding_model
         self.language_model = language_model
@@ -69,6 +68,7 @@ class DotVectorDB:
         replace_period_with_underscore = self.path.replace(".", "_")
         self.graph_path = f"""{replace_period_with_underscore}_graph.pkl"""
         self.graph_retriever = GraphRetriever(graph_path=f"""{self.graph_path}""", conn=self.conn, lock=self.lock)
+        self.DIM = await self.get_embedding_dim()
         if self.verbose:
             print("DotVectorDB initialized successfully.")
         return self
@@ -198,18 +198,27 @@ class DotVectorDB:
     ############################################################
     #   Accessor Functions                                     # 
     ############################################################
-    async def get_entity_types(self):
+    async def get_entity_types(self, only_populated=False):
             """Gets entity types from the database and returns them as a dictionary"""
             if not self.conn:
                 raise RuntimeError("Database not opened")
             try: 
                 async with self.lock:
-                    cursor = await self.conn.execute(
-                    """
-                    SELECT entity_type, type_description
-                    FROM entity_types
-                    """
-                )
+                    if only_populated:
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description
+                            FROM entity_types
+                            WHERE num_entities > 0
+                            """
+                        )
+                    else:
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description
+                            FROM entity_types
+                            """
+                        )
                 existing_entity_types = await cursor.fetchall()
                 await cursor.close()
                 if existing_entity_types is None:
@@ -219,11 +228,122 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the get_entity_types function inside DotVectorDB: {e}")
-    async def get_KG_description(self):
-        pass
+    async def get_sources(self):
+            """Gets sources from the database and returns them as a list of dictionaries"""
+            if not self.conn:
+                raise RuntimeError("Database not opened")
+            try:
+                async with self.lock:
+                    cursor = await self.conn.execute(
+                        "SELECT id, name FROM source"
+                    )
+                    sources = await cursor.fetchall()
+                    await cursor.close()
+                    return [
+                        {"id": source[0], "name": source[1]}
+                        for source in sources
+                    ]
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the get_sources function inside DotVectorDB: {e}")
+    async def get_embedding_dim(self):
+        if not self.conn:
+            raise RuntimeError("Database not opened")
+        try:
+            async with self.lock:
+                cursor = await self.conn.execute(
+                    "SELECT DIM FROM global_config WHERE id = 1"
+                )
+                result = await cursor.fetchone()
+                await cursor.close()
+                if result is None:
+                    raise RuntimeError("Global configuration not found in the database. One should always exist!")
+                dim = result[0]
+            # We move outside the lock to avoid a potential deadlock. We call set_embedding_dim to set the missing dim.
+            if dim is None:
+                dim = await self.set_embedding_dim()
+            return dim
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the get_embedding_dim function inside DotVectorDB: {e}")
+
+    async def get_global_config(self):
+            """Gets the global configuration metadata from the database"""
+            if not self.conn:
+                raise RuntimeError("Database not opened")
+            try:
+                async with self.lock:
+                    cursor = await self.conn.execute(
+                        """
+                        SELECT current_version_count, description_version, description
+                        FROM global_config
+                        WHERE id = 1
+                        """
+                    )
+                    global_config = await cursor.fetchone()
+                    await cursor.close()
+                    if global_config is None:
+                        raise RuntimeError("Global configuration not found in the database. One should always exist!")
+                    return {
+                        "current_version_count": global_config[0],
+                        "description_version": global_config[1],
+                        "description": global_config[2],
+                    }
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the get_global_config function inside DotVectorDB: {e}")
     ############################################################
     #   Functions For Adding Text Content to the Database      # 
     ############################################################
+    async def set_embedding_dim(self):
+        if not self.conn:
+            raise RuntimeError("Database not opened")
+        text = "This is a test string to determine the embedding dimension."
+        # First, we must add the embedding model to the embedding table if it does not already exist.
+        embedding_model_id = await self.add_metadata_content(table="embedding_model", name=self.embedding_model.model_name)
+        async with self.lock:
+            try:
+                # Then, we can proceed with the rest of the function.
+                # Since it is a numpy array, we get the dimension by checking the last dimension of the shape.
+                # e.g., (1, 1536) yields 1536 as the embedding dimension.
+                embedding, tokens = await self.embedding_model.embed(text)
+                dim = embedding.shape[-1]
+
+                await self.conn.execute(
+                    """
+                    UPDATE global_config
+                    SET DIM = ?, embedding_model_id = ?
+                    WHERE id = 1
+                    """,
+                    (dim, embedding_model_id)
+                )
+                await self.conn.commit()
+                return dim
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the set_embedding_dim function inside DotVectorDB: {e}")
+
+    async def update_global_description(self, description, description_version):
+                """Updates the global description and its database version"""
+                if not self.conn:
+                    raise RuntimeError("Database not opened")
+                try:
+                    async with self.lock:
+                        await self.conn.execute(
+                            """
+                            UPDATE global_config
+                            SET description = ?, description_version = ?
+                            WHERE id = 1
+                            """,
+                            (
+                                json.dumps(description, ensure_ascii=False),
+                                description_version,
+                            )
+                        )
+                        await self.conn.commit()
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the update_global_description function inside DotVectorDB: {e}")
     async def add_metadata_content(self, table, name):
         if not self.conn:
             raise RuntimeError("Database not opened")
@@ -237,6 +357,7 @@ class DotVectorDB:
                     """, (source_hash, name)
                 )
                 await self.conn.commit()
+            return source_hash
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the add_metadata_content function inside DotVectorDB: {e}")
@@ -456,19 +577,26 @@ class DotVectorDB:
     ############################################################
     #   Function For Generating Global Source Descriptions    #
     ############################################################
-    async def generate_global_descriptions(self, sample_size=5):
+    async def generate_global_descriptions(self, sample_size=5, debug_mode=False):
         if not self.conn:
             raise RuntimeError("Database not opened")
         try:
+            entity_types = await self.get_entity_types(only_populated=True)
+            sources = await self.get_sources()
+            global_config = await self.get_global_config()
             generator = GlobalDescriptionGenerator(
                 conn=self.conn,
                 lock=self.lock,
                 language_model=self.language_model.generate,
+                entity_types=entity_types,
+                sources=sources,
+                global_config=global_config,
+                save_global_description_func=self.update_global_description,
                 verbose=self.verbose,
+                debug_mode=debug_mode
             )
             return await generator.generate(
                 sample_size=sample_size,
-                verbose=self.verbose,
             )
         except Exception as e:
             traceback.print_exc()
@@ -479,7 +607,7 @@ class DotVectorDB:
     ############################################################
     # Function For a Full Construction (Chunks -> Full Graph)  # 
     ############################################################
-    async def construct_GraphRAG(self, input_document_list=None, entity_types=None, async_cooldown=60, requests_per_minute=1000):
+    async def construct_GraphRAG(self, input_document_list=None, entity_types=None, debug_mode=False, async_cooldown=60, requests_per_minute=1000):
         # First, we ingest the documents into the database, which includes extracting text, chunking it, and adding embeddings.
         try:
             await self.ingest_documents(input_document_list=input_document_list, 
@@ -504,7 +632,7 @@ class DotVectorDB:
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while adding in the relationships: {e}")
         # Fifth, generate and save a global description for each source document.
         try:
-            await self.generate_global_descriptions()
+            await self.generate_global_descriptions(debug_mode=debug_mode)
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
@@ -571,6 +699,8 @@ class DotVectorDB:
                     # Third, we insert the embedding into the embedding table
                     try:
                         embedding_blob, tokens = await self.embedding_model.embed(content)
+                        if embedding_blob.shape[-1] != self.DIM:
+                            raise RuntimeError(f"Embedding dimension mismatch: expected {self.DIM}, got {embedding_blob.shape[-1]}")
                         await self.conn.execute(INSERT_INTO_EMBEDDING_TABLE_SQL, (pk_hash, embedding_blob))
                         await self.conn.execute(UPDATE_TABLE_STATUS, (pk_hash,))
                         await self.conn.commit()

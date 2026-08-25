@@ -41,42 +41,6 @@ CREATE TABLE IF NOT EXISTS entity_types (
     PRIMARY KEY (entity_type)
 );
 /*********************************
-----> Increment/Decrement triggers <----
-Purpose: This these triggers are used to automatically update the num_entities field in the entity_types table when entities are added or removed from the entity table.
-- increment_entity_type_count: This trigger is fired after an entity is inserted into the entity table. It increments the num_entities field in the entity_types table for the corresponding entity_type.
-- decrement_entity_type_count: This trigger is fired after an entity is deleted from the entity table. It decrements the num_entities field in the entity_types table for the corresponding entity_type.
-- update_entity_type_count: This trigger is fired after an entity's entity_type is updated in the entity table. It decrements the num_entities field in the entity_types table for the old entity_type and increments the num_entities field in the entity_types table for the new entity_type.
-*********************************/
-CREATE TRIGGER IF NOT EXISTS increment_entity_type_count
-AFTER INSERT ON entity
-BEGIN
-    UPDATE entity_types
-    SET num_entities = num_entities + 1
-    WHERE entity_type = NEW.entity_type;
-END;
-
-CREATE TRIGGER IF NOT EXISTS decrement_entity_type_count
-AFTER DELETE ON entity
-BEGIN
-    UPDATE entity_types
-    SET num_entities = MAX(num_entities - 1, 0)
-    WHERE entity_type = OLD.entity_type;
-END;
-
-CREATE TRIGGER IF NOT EXISTS update_entity_type_count
-AFTER UPDATE OF entity_type ON entity
-WHEN OLD.entity_type <> NEW.entity_type
-BEGIN
-    UPDATE entity_types
-    SET num_entities = MAX(num_entities - 1, 0)
-    WHERE entity_type = OLD.entity_type;
-
-    UPDATE entity_types
-    SET num_entities = num_entities + 1
-    WHERE entity_type = NEW.entity_type;
-END;
-
-/*********************************
 ----> Chunk to entity mapping <----
 Purpose: This file contains the entity schema for mapping chunks to its associated entities in the database.
 - chunk_id: This is the primary key for the chunk_to_entity_mapping table. It is a foreign key that references the chunk_id in the chunk table.
@@ -89,33 +53,49 @@ CREATE TABLE IF NOT EXISTS chunk_to_entity_mapping (
     FOREIGN KEY (chunk_id) REFERENCES chunk(chunk_id) ON DELETE CASCADE,
     FOREIGN KEY (entity_id) REFERENCES entity(entity_id) ON DELETE CASCADE
 );
-
 /*********************************
-----> DEPRECATED TABLES <----
-Purpose: This file contains the schema for deprecated tables in the database. These are no longer used in the current version of the database, but are kept for backward compatibility.
-- entity_extraction_jobs: This table is used to track the progress of entity extraction jobs.
-- entity_deduplication_jobs: This table is used to track the progress of entity deduplication jobs.
+----> Increment/Decrement triggers <----
+Purpose: This these triggers are used to automatically update the num_entities field in the entity_types table when entities are added or removed from the entity table.
+In each of these operations, we must increment global_config's current_version_count by 1 to ensure that the database version is updated after each write operation.
+- increment_entity_type_count: This trigger is fired after an entity is inserted into the entity table. It increments the num_entities field in the entity_types table for the corresponding entity_type.
+- decrement_entity_type_count: This trigger is fired after an entity is deleted from the entity table. It decrements the num_entities field in the entity_types table for the corresponding entity_type.
+- update_entity_type_count: This trigger is fired after an entity's entity_type is updated in the entity table. It decrements the num_entities field in the entity_types table for the old entity_type and increments the num_entities field in the entity_types table for the new entity_type.
 *********************************/
-CREATE TABLE IF NOT EXISTS entity_extraction_jobs (
-    job_id INTEGER NOT NULL,
-    source_id TEXT NOT NULL,
-    is_completed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    tokens INT NOT NULL,
-    completed_at TIMESTAMP,
-    PRIMARY KEY (job_id),
-    FOREIGN KEY (source_id) REFERENCES source(id) ON DELETE CASCADE
-);
+CREATE TRIGGER IF NOT EXISTS increment_entity_type_count
+AFTER INSERT ON entity
+BEGIN
+    UPDATE entity_types
+    SET num_entities = num_entities + 1
+    WHERE entity_type = NEW.entity_type;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
+END;
 
-CREATE TABLE IF NOT EXISTS entity_deduplication_jobs (
-    job_id INTEGER NOT NULL,
-    source_id TEXT NOT NULL,
-    is_completed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    tokens INT NOT NULL,
-    completed_at TIMESTAMP,
-    PRIMARY KEY (job_id),
-    FOREIGN KEY (source_id) REFERENCES source(id) ON DELETE CASCADE
-);
+CREATE TRIGGER IF NOT EXISTS decrement_entity_type_count
+AFTER DELETE ON entity
+BEGIN
+    UPDATE entity_types
+    SET num_entities = MAX(num_entities - 1, 0)
+    WHERE entity_type = OLD.entity_type;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_entity_type_count
+AFTER UPDATE OF entity_type ON entity
+WHEN OLD.entity_type <> NEW.entity_type
+BEGIN
+    UPDATE entity_types
+    SET num_entities = MAX(num_entities - 1, 0)
+    WHERE entity_type = OLD.entity_type;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
+
+    UPDATE entity_types
+    SET num_entities = num_entities + 1
+    WHERE entity_type = NEW.entity_type;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
+END;
 
 

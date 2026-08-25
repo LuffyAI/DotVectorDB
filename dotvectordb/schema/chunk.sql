@@ -1,4 +1,3 @@
-
 /*********************************
 ----> Embedding Model <----
 Purpose: This file contains the embedding_model schema for the database.
@@ -13,6 +12,16 @@ CREATE TABLE IF NOT EXISTS embedding_model (
     PRIMARY KEY (id)
 );
 
+
+INSERT OR IGNORE INTO global_config (
+    id,
+    current_version_count,
+    description_version,
+    description,
+    DIM,
+    embedding_model_id
+)
+VALUES (1, 0, 0, NULL, NULL, NULL);
 /*********************************
 ----> Source <----
 Purpose: This file contains the source schema for the database. A source is a document that is ingested into the system and can be chunked into smaller pieces for processing. Each source has a unique id, name, and description. The description is a JSON object that can contain information such as the source's origin, content, and any other relevant details.
@@ -42,8 +51,6 @@ CREATE TABLE IF NOT EXISTS source (
     relation_construct_tokens INT DEFAULT 0,
     PRIMARY KEY (id)
 );
-
-
 /*********************************
 ----> Chunk <----
 Purpose: This file contains the chunk schema for the database. A chunk represents a small slice of a source document. Each chunk has a unique id, a reference to the source it belongs to, the content of the chunk, and a reference to the embedding model used to generate its embedding. Additionally, there are boolean flags to indicate whether the chunk has been embedded, whether entities have been extracted from it, and whether relationships have been extracted from it.
@@ -67,10 +74,10 @@ CREATE TABLE IF NOT EXISTS chunk (
     FOREIGN KEY (source_id) REFERENCES source(id) ON DELETE CASCADE,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
 );
-
 /*********************************
 ----> Increment/Decrement triggers <----
 Purpose: This these triggers are used to automatically update the num_chunks field in the source table when chunks are added or removed from the chunk table:
+In each of these operations, we must increment global_config's current_version_count by 1 to ensure that the database version is updated after each write operation.
 - increment_source_num_chunks: This trigger is fired after a chunk is inserted into the chunk table. It increments the num_chunks field in the source table for the corresponding source_id.
 - decrement_source_num_chunks: This trigger is fired after a chunk is deleted from the chunk table. It decrements the num_chunks field in the source table for the corresponding source_id.
 *********************************/
@@ -80,6 +87,8 @@ BEGIN
     UPDATE source
     SET num_chunks = num_chunks + 1 
     WHERE id = NEW.source_id;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS decrement_source_num_chunks
@@ -88,4 +97,6 @@ BEGIN
     UPDATE source
     SET num_chunks = MAX(num_chunks - 1, 0)
     WHERE id = OLD.source_id;
+    UPDATE global_config
+    SET current_version_count = current_version_count + 1;
 END;
