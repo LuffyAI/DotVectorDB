@@ -1,9 +1,7 @@
 # DotVectorDB
-
 DotVectorDB is an asynchronous vector and graph database built for research paper **DotRAG: Retrieval-Time Reasoning Along Paths**. It combines document ingestion, text chunking, embeddings, SQLite vector search, entity extraction, relationship extraction, and graph-based retrieval.
 
 ## Features
-
 - Asynchronous SQLite database access
 - Vector storage and similarity search
 - GraphRAG construction from document collections
@@ -15,13 +13,11 @@ DotVectorDB is an asynchronous vector and graph database built for research pape
 - Document extraction from TXT, PDF, DOCX, XLSX, XLSM, and PPTX files
 
 ## Requirements
-
 - Python 3.9 or newer
 - Linux, including Ubuntu
 - API credentials for the embedding and language-model providers being used
 
 ## Installation
-
 After DotVectorDB is published to PyPI:
 
 ```bash
@@ -41,7 +37,6 @@ pip install -e .
 ```
 
 ## Environment Variables
-
 Create a `.env` file in your application when using API-based providers.
 
 ```env
@@ -55,7 +50,6 @@ TOKENIZER=gpt-4o
 Only configure the keys and provider settings used by your application.
 
 ## Basic Usage
-
 DotVectorDB uses an asynchronous API.
 
 ```python

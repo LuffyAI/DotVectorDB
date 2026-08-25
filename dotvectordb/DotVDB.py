@@ -11,6 +11,7 @@ from dotvectordb.prompts.entity_prompts import DEFAULT_ENTITY_TYPES, isEntityTyp
 from dotvectordb.graph.entity_indexer import EntityIndexer
 from dotvectordb.graph.relatonship_indexer import RelationshipIndexer
 from dotvectordb.graph.graph_retriever import GraphRetriever
+from dotvectordb.graph.generate_global_desc import GlobalDescriptionGenerator
 from dotvectordb.graph.TempVectorSpace import AsyncTempVectorSpace
 import os
 from pathlib import Path
@@ -35,11 +36,12 @@ class DotVectorDB:
         self.language_model = language_model
         self.chunking_func = chunking_func
         self.hashing_func = hashing_func
+        self.verbose = verbose
         self.conn: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
-############################################################
-#   Functions For Opening and Closing DotVDB               # 
-############################################################
+    ############################################################
+    #   Functions For Opening and Closing DotVDB               # 
+    ############################################################
     async def open(self):
         self.conn = await aiosqlite.connect(self.path)
         def setup():
@@ -57,6 +59,8 @@ class DotVectorDB:
                 str(BASE_DIR / "compiled_vec1" / "vec1.so")
                 )
                 raw.enable_load_extension(False)
+                if self.verbose:
+                    print("Database connection opened and vec1 extension loaded successfully.")
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the setup() function inside DotVectorDB's open function: {e}")
@@ -65,14 +69,21 @@ class DotVectorDB:
         replace_period_with_underscore = self.path.replace(".", "_")
         self.graph_path = f"""{replace_period_with_underscore}_graph.pkl"""
         self.graph_retriever = GraphRetriever(graph_path=f"""{self.graph_path}""", conn=self.conn, lock=self.lock)
+        if self.verbose:
+            print("DotVectorDB initialized successfully.")
         return self
     async def close(self):
         if self.conn:
+            if self.verbose:
+                print("Closing database connection...")
             await self.conn.close()
             self.conn = None
-############################################################
-#   Functions For Manipulating DotVDB's Schema             #
-############################################################
+        else:
+            if self.verbose:
+                print("Database connection is already closed.")
+    ############################################################
+    #   Functions For Manipulating DotVDB's Schema             #
+    ############################################################
     async def initialize_default_schema(self):
         try:
             if not self.conn:
@@ -85,20 +96,21 @@ class DotVectorDB:
                 await self.conn.executescript(entities_sql)
                 await self.conn.executescript(relationships_sql)
                 await self.conn.commit()
+            if self.verbose:
+                print("Default schema initialized successfully.")
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the initialize_default_schema function inside DotVectorDB: {e}")
-        
-    async def add_entity_types(self, entity_types=None, verbose=False):
+    async def add_entity_types(self, entity_types=None):
         if not self.conn:
             raise RuntimeError("Database not opened")
         try:
             existing_entity_types = await self.get_entity_types()
             if entity_types is None or await isEntityTypesFormatCorrect(entity_types) is False:
-                if verbose:
+                if self.verbose:
                     print("No valid entity types provided. Using default entity types.")
                 entity_types = DEFAULT_ENTITY_TYPES
-            if verbose:
+            if self.verbose:
                 print("Current entity types:")
                 print(json.dumps(entity_types, indent=4))
             if existing_entity_types:
@@ -113,7 +125,7 @@ class DotVectorDB:
                                 (entity_type, entity_types[entity_type])
                             )
             else:
-                if verbose:
+                if self.verbose:
                     print("No existing entity types found in the database. Adding default entity types.")
                 async with self.lock:
                     for entity_type in entity_types:
@@ -128,29 +140,6 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the add_entity_types function inside DotVectorDB: {e}")
-        
-    async def get_entity_types(self):
-        """Gets entity types from the database and returns them as a dictionary"""
-        if not self.conn:
-            raise RuntimeError("Database not opened")
-        try: 
-            async with self.lock:
-                cursor = await self.conn.execute(
-                """
-                SELECT entity_type, type_description
-                FROM entity_types
-                """
-            )
-            existing_entity_types = await cursor.fetchall()
-            await cursor.close()
-            if existing_entity_types is None:
-                return {}
-            entity_types_dict = {et[0]: et[1] for et in existing_entity_types}
-            return entity_types_dict
-        except Exception as e:
-            traceback.print_exc()
-            raise RuntimeError(f"Error in the get_entity_types function inside DotVectorDB: {e}")
-
     async def add_tables(self,schema_list):
         if not self.conn:
             raise RuntimeError("Database connection is not open.")
@@ -158,8 +147,7 @@ class DotVectorDB:
             for schema in schema_list:
                 await self.conn.executescript(schema)
         await self.conn.commit()
-
-    async def remove_tables(self, table_names, verbose=False):
+    async def remove_tables(self, table_names):
         if not self.conn:
             raise RuntimeError("Database connection is not open.")
         try:
@@ -185,7 +173,7 @@ class DotVectorDB:
                         await self.conn.execute(
                             f'DROP TABLE IF EXISTS "{table_name}"'
                         )
-                        if verbose:
+                        if self.verbose:
                             print(f"Table {table_name} dropped.")
                     for table_name in table_names:
                         await drop_table(table_name)
@@ -194,7 +182,6 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the remove_tables function inside DotVectorDB: {e}")
-
     async def display_tables(self):
         if not self.conn:
             raise RuntimeError("Database connection is not open.")
@@ -208,9 +195,35 @@ class DotVectorDB:
                 columns = await cursor.fetchall()
                 for column in columns:
                     print(f"  Column: {column[1]} (Type: {column[2]})")
-############################################################
-#   Functions For Adding Content to the Database           # 
-############################################################
+    ############################################################
+    #   Accessor Functions                                     # 
+    ############################################################
+    async def get_entity_types(self):
+            """Gets entity types from the database and returns them as a dictionary"""
+            if not self.conn:
+                raise RuntimeError("Database not opened")
+            try: 
+                async with self.lock:
+                    cursor = await self.conn.execute(
+                    """
+                    SELECT entity_type, type_description
+                    FROM entity_types
+                    """
+                )
+                existing_entity_types = await cursor.fetchall()
+                await cursor.close()
+                if existing_entity_types is None:
+                    return {}
+                entity_types_dict = {et[0]: et[1] for et in existing_entity_types}
+                return entity_types_dict
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the get_entity_types function inside DotVectorDB: {e}")
+    async def get_KG_description(self):
+        pass
+    ############################################################
+    #   Functions For Adding Text Content to the Database      # 
+    ############################################################
     async def add_metadata_content(self, table, name):
         if not self.conn:
             raise RuntimeError("Database not opened")
@@ -227,7 +240,6 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the add_metadata_content function inside DotVectorDB: {e}")
-
     async def add_chunk(self, content, source_name, model_name):
         if not self.conn:
             raise RuntimeError("Database not opened")
@@ -250,73 +262,6 @@ class DotVectorDB:
             traceback.print_exc()
             raise RuntimeError(f"Error while adding a chunk")
     ############################################################
-    #   Functions For DotVDB's Vector Ingestion + Search       # 
-    ############################################################
-    async def add_embedding(self, table, content, pk_hash):
-            # Check if the database connection is open
-            if not self.conn:
-                raise RuntimeError("Database not opened")
-            # Checks whether the base table exists by looking it up in SQLite's internal schema catalog
-            # Then, it checks the table has a valid simple primary key by using the pragma_table_info function to inspect the table's schema
-            CHECK_BASE_TABLE_AND_PRIMARY_KEY_SQL = f"""
-                SELECT
-                    EXISTS (
-                        SELECT 1
-                        FROM sqlite_master
-                        WHERE type = 'table'
-                        AND name = '{table}'
-                    ) AS table_exists,
-
-                    (
-                        SELECT COUNT(*) = 1
-                        FROM pragma_table_info('{table}')
-                        WHERE pk > 0
-                        AND UPPER(type) = 'INTEGER'
-                    ) AS valid_primary_key,
-
-                    EXISTS (
-                        SELECT 1
-                        FROM pragma_table_info('{table}')
-                        WHERE name = 'is_embedded'
-                    ) AS has_is_embedded_column;
-                """
-
-            CREATE_EMBEDDING_TABLE_SQL = f"""
-            CREATE VIRTUAL TABLE IF NOT EXISTS {table}_embeddings
-            USING vec1(embedding);
-            """
-            INSERT_INTO_EMBEDDING_TABLE_SQL = f"""
-            INSERT INTO {table}_embeddings(rowid, embedding)
-            VALUES (?, ?)
-            """
-            UPDATE_TABLE_STATUS = f"""
-            UPDATE {table}
-            SET is_embedded = 1
-            WHERE rowid = ?
-            """
-            async with self.lock:
-                # First, we check if the base table exists and has a valid primary key
-                async with self.conn.execute(CHECK_BASE_TABLE_AND_PRIMARY_KEY_SQL) as cursor:
-                    row = await cursor.fetchone()
-                    table_exists, valid_primary_key, has_is_embedded_column = row
-                    if not table_exists:
-                        raise RuntimeError(f"Base table '{table}' does not exist.")
-                    if not valid_primary_key:
-                        raise RuntimeError(f"Base table '{table}' does not have a valid simple primary key.")
-                    if not has_is_embedded_column:
-                        raise RuntimeError(f"Base table '{table}' does not have an 'is_embedded' column.")
-                # Second, we create the embedding table if it doesn't exist
-                await self.conn.execute(CREATE_EMBEDDING_TABLE_SQL)
-                # Third, we insert the embedding into the embedding table
-                try:
-                    embedding_blob, tokens = await self.embedding_model.embed(content)
-                    await self.conn.execute(INSERT_INTO_EMBEDDING_TABLE_SQL, (pk_hash, embedding_blob))
-                    await self.conn.execute(UPDATE_TABLE_STATUS, (pk_hash,))
-                    await self.conn.commit()
-                except Exception as e:
-                    traceback.print_exc()
-                    raise RuntimeError(f"Error in the add_embedding function inside DotVectorDB: {e}")
-    ############################################################
     #   Functions For Ingesting Text Chunks                    # 
     ############################################################
     async def get_unprocessed_metadata(self, table):
@@ -333,13 +278,11 @@ class DotVectorDB:
         except Exception as e:  
             traceback.print_exc()
             raise RuntimeError(f"Error in the get_unprocessed_metadata function inside DotVectorDB: {e}")
-        
     async def ingest_documents(
             self,
             input_document_list=None,
             async_cooldown=60,
-            requests_per_minute=1000,
-            verbose=False
+            requests_per_minute=1000
         ):
             """
             :Docstring for ingest_documents
@@ -376,7 +319,7 @@ class DotVectorDB:
                     total_chunks = []
                     for document, value in results.items():
                         document_chunks = self.chunking_func.chunk(value)
-                        if verbose:
+                        if self.verbose:
                             print("Document:", document)
 
                         for chunk in document_chunks:
@@ -388,7 +331,7 @@ class DotVectorDB:
                                 model_name=self.embedding_model.model_name
                             )
                         total_chunks.extend(document_chunks)
-                    if verbose:
+                    if self.verbose:
                         print(f"Total chunks created: {len(total_chunks)}")
                         print(f"Starting to add embeddings for each chunk to the database...")
             except Exception as e:
@@ -414,10 +357,10 @@ class DotVectorDB:
                             )
                             return None
                         except Exception as error:
-                            if verbose:
+                            if self.verbose:
                                 print(f"Embedding failed, retrying next batch: {error}")
                             return chunk         
-                    if verbose:
+                    if self.verbose:
                         print(f"Sending batch of {len(current_batch)} chunks to embedding model...")
                     batch_results = await tqdm_asyncio.gather(
                             *(embed_chunk(chunk) for chunk in current_batch)
@@ -428,22 +371,21 @@ class DotVectorDB:
                     ])
                     failed_chunks.extend(remaining_chunks)
                     if failed_chunks:
-                        if verbose:
+                        if self.verbose:
                             print(
                                 f"Cooldown for {async_cooldown} seconds. "
                                 f"{len(failed_chunks)} chunks remaining."
                             )
                         await asyncio.sleep(async_cooldown)
-                if verbose:
+                if self.verbose:
                     print("All embeddings added successfully.")
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the ingest_documents function inside DotVectorDB for embedding chunks: {e}")
-            
     ############################################################
     #   Function For Extracting and Embedding Entities        # 
     ############################################################
-    async def extract_and_embed_entities(self, entity_types=None, async_cooldown=60, requests_per_minute=1000, verbose=False):
+    async def extract_and_embed_entities(self, entity_types=None, async_cooldown=60, requests_per_minute=1000):
         if not self.conn:
             raise RuntimeError("Database not opened")
         # First, we add in any passed in entities. If the database is new and no entity types are passed in, we use the default entity types.
@@ -469,22 +411,21 @@ class DotVectorDB:
             await entity_indexer.extract_entities_from_ingested_chunks(
                 async_cooldown=async_cooldown,
                 requests_per_minute=requests_per_minute,
-                verbose=verbose
+                verbose=self.verbose
             )
             # Embeds all entities that were extracted by the entity extraction model in batches.
             await entity_indexer.embed_entities(
                 async_cooldown=async_cooldown,
                 requests_per_minute=requests_per_minute,
-                verbose=verbose
+                verbose=self.verbose
             )
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the extract_and_embed_entities function inside DotVectorDB: {e}")
-        
     ############################################################
     #   Function For Extracting and Embedding Relations        # 
     ############################################################
-    async def extract_and_embed_relationships(self, async_cooldown=60, requests_per_minute=1000, verbose=False):
+    async def extract_and_embed_relationships(self, async_cooldown=60, requests_per_minute=1000):
             if not self.conn:
                 raise RuntimeError("Database not opened")
             try:
@@ -503,26 +444,46 @@ class DotVectorDB:
                 await relationship_indexer.extract_relations_from_chunks(
                     async_cooldown=async_cooldown,
                     requests_per_minute=requests_per_minute,
-                    verbose=verbose
+                    verbose=self.verbose
                 )
                 await relationship_indexer.embed_relationships(
                     async_cooldown=async_cooldown,
                     requests_per_minute=requests_per_minute,
-                    verbose=verbose)
+                    verbose=self.verbose)
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the extract_and_embed_relationships function inside DotVectorDB while extracting and embedding relationships: {e}")
-
-            
+    ############################################################
+    #   Function For Generating Global Source Descriptions    #
+    ############################################################
+    async def generate_global_descriptions(self, sample_size=5):
+        if not self.conn:
+            raise RuntimeError("Database not opened")
+        try:
+            generator = GlobalDescriptionGenerator(
+                conn=self.conn,
+                lock=self.lock,
+                language_model=self.language_model.generate,
+                verbose=self.verbose,
+            )
+            return await generator.generate(
+                sample_size=sample_size,
+                verbose=self.verbose,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(
+                "Error in the generate_global_descriptions function inside DotVectorDB: "
+                f"{e}"
+            ) 
     ############################################################
     # Function For a Full Construction (Chunks -> Full Graph)  # 
     ############################################################
-    async def construct_GraphRAG(self, input_document_list=None, entity_types=None, async_cooldown=60, requests_per_minute=1000, verbose=False):
+    async def construct_GraphRAG(self, input_document_list=None, entity_types=None, async_cooldown=60, requests_per_minute=1000):
         # First, we ingest the documents into the database, which includes extracting text, chunking it, and adding embeddings.
         try:
             await self.ingest_documents(input_document_list=input_document_list, 
-                                        async_cooldown=async_cooldown, requests_per_minute=requests_per_minute, 
-                                        verbose=verbose)
+                                        async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
             # Second, we  add in passed Entity types. If none, we use default types.
             await self.add_entity_types(entity_types)
             entity_types = await self.get_entity_types()
@@ -531,22 +492,124 @@ class DotVectorDB:
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while ingesting text chunks: {e}")
         # Third, we extract entities from the chunks and add them to the database.
         try:
-           await self.extract_and_embed_entities(entity_types=entity_types, async_cooldown=async_cooldown, requests_per_minute=requests_per_minute, verbose=verbose)
+           await self.extract_and_embed_entities(entity_types=entity_types, async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while adding in the entities: {e}")
         # Fourth, we extract relationships from the entities and add them to the database.
         try:
-            await self.extract_and_embed_relationships(async_cooldown=async_cooldown, requests_per_minute=requests_per_minute, verbose=verbose)
+            await self.extract_and_embed_relationships(async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while adding in the relationships: {e}")
-        if verbose:
+        # Fifth, generate and save a global description for each source document.
+        try:
+            await self.generate_global_descriptions()
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
+        if self.verbose:
             print("Graph construction completed successfully.")
-        
     ############################################################
-    #   Functions For Graph Retrieval                          # 
+    #   Functions For DotVDB's Vector Ingestion + Search       # 
     ############################################################
+    async def add_embedding(self, table, content, pk_hash):
+                # Check if the database connection is open
+                if not self.conn:
+                    raise RuntimeError("Database not opened")
+                # Checks whether the base table exists by looking it up in SQLite's internal schema catalog
+                # Then, it checks the table has a valid simple primary key by using the pragma_table_info function to inspect the table's schema
+                CHECK_BASE_TABLE_AND_PRIMARY_KEY_SQL = f"""
+                    SELECT
+                        EXISTS (
+                            SELECT 1
+                            FROM sqlite_master
+                            WHERE type = 'table'
+                            AND name = '{table}'
+                        ) AS table_exists,
+    
+                        (
+                            SELECT COUNT(*) = 1
+                            FROM pragma_table_info('{table}')
+                            WHERE pk > 0
+                            AND UPPER(type) = 'INTEGER'
+                        ) AS valid_primary_key,
+    
+                        EXISTS (
+                            SELECT 1
+                            FROM pragma_table_info('{table}')
+                            WHERE name = 'is_embedded'
+                        ) AS has_is_embedded_column;
+                    """
+    
+                CREATE_EMBEDDING_TABLE_SQL = f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS {table}_embeddings
+                USING vec1(embedding);
+                """
+                INSERT_INTO_EMBEDDING_TABLE_SQL = f"""
+                INSERT INTO {table}_embeddings(rowid, embedding)
+                VALUES (?, ?)
+                """
+                UPDATE_TABLE_STATUS = f"""
+                UPDATE {table}
+                SET is_embedded = 1
+                WHERE rowid = ?
+                """
+                async with self.lock:
+                    # First, we check if the base table exists and has a valid primary key
+                    async with self.conn.execute(CHECK_BASE_TABLE_AND_PRIMARY_KEY_SQL) as cursor:
+                        row = await cursor.fetchone()
+                        table_exists, valid_primary_key, has_is_embedded_column = row
+                        if not table_exists:
+                            raise RuntimeError(f"Base table '{table}' does not exist.")
+                        if not valid_primary_key:
+                            raise RuntimeError(f"Base table '{table}' does not have a valid simple primary key.")
+                        if not has_is_embedded_column:
+                            raise RuntimeError(f"Base table '{table}' does not have an 'is_embedded' column.")
+                    # Second, we create the embedding table if it doesn't exist
+                    await self.conn.execute(CREATE_EMBEDDING_TABLE_SQL)
+                    # Third, we insert the embedding into the embedding table
+                    try:
+                        embedding_blob, tokens = await self.embedding_model.embed(content)
+                        await self.conn.execute(INSERT_INTO_EMBEDDING_TABLE_SQL, (pk_hash, embedding_blob))
+                        await self.conn.execute(UPDATE_TABLE_STATUS, (pk_hash,))
+                        await self.conn.commit()
+                    except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the add_embedding function inside DotVectorDB: {e}")
+    async def compare_two_entities(self, centroid_entity_id, comparsion_entity_id, distance_metric="l2"):
+        if not self.conn:
+            raise RuntimeError("Database not opened")
+
+        if distance_metric == "cos":
+             distance_func = "vec1_cos_distance"
+        else:
+             distance_func = "vec1_l2_distance"
+
+        # Compare the similarity between two entities relative to the centroid's embedding
+        SQL = f"""
+        SELECT 
+          1.0 / (1.0 + {distance_func}(v1.embedding, v2.embedding)) AS similarity_score
+        FROM entity_embeddings(:centroid_entity_id) AS v1
+        JOIN entity_embeddings(:comparsion_entity_id) AS v2
+        ON v1.rowid = :centroid_entity_id AND v2.rowid = :comparsion_entity_id; 
+        """
+        try:
+            async with self.conn.execute(
+                SQL,
+                {
+                    "centroid_entity_id": centroid_entity_id,
+                    "comparsion_entity_id": comparsion_entity_id,
+                },
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("No similarity score found for the given entity IDs.")
+                similarity_score = row[0]
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the compare_two_entities function inside DotVectorDB: {e}")
+        return centroid_entity_id, comparsion_entity_id, similarity_score
     async def vector_search(self, query, table, top_k=40, KNN=True, distance_metric="l2"):
             if not self.conn:
                     raise RuntimeError("Database not opened") 
@@ -601,7 +664,6 @@ class DotVectorDB:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the vector_search function inside DotVectorDB: {e}")
             return [dict(zip(column_names, row)) for row in rows], query_tokens
-    
     async def construct_temp_graph(self, relationship_ids):
         if not self.conn:
             raise RuntimeError("Database not opened")
@@ -615,7 +677,6 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_temp_graph function inside DotVectorDB: {e}")
-    
     async def subgraph_constrained_semantic_retrieval(self, custom_func, temp_vector_space_names, memoryHandler=None, **kwargs):
             """
             In this code, you would open TempVectorSpace() and close tempvector space by the end of the function.
@@ -628,9 +689,3 @@ class DotVectorDB:
             async with AsyncTempVectorSpace(conn=self.conn, tids=temp_vector_space_names, lock=self.lock, memory=memoryHandler) as QueryWS:
                 results, tokens = await custom_func(QueryWS, **kwargs)
             return results, tokens
-        
-                
-
-
-
-        

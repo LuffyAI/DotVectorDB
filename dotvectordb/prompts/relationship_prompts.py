@@ -1,3 +1,7 @@
+"""
+Author: Larnell Moore
+Purpose: This file contains the prompt templates for extracting relationships between entities from each text chunk in the database. The prompts are designed to guide the LLM during this extraction during graph construction. 
+"""
 from typing import Any, Dict, List, Tuple, Optional
 from pydantic import BaseModel, Field
 
