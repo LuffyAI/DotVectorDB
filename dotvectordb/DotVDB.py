@@ -198,27 +198,44 @@ class DotVectorDB:
     ############################################################
     #   Accessor Functions                                     # 
     ############################################################
-    async def get_entity_types(self, only_populated=False):
+    async def get_entity_types(self, only_populated=False, include_counts=False):
             """Gets entity types from the database and returns them as a dictionary"""
             if not self.conn:
                 raise RuntimeError("Database not opened")
             try: 
                 async with self.lock:
                     if only_populated:
-                        cursor = await self.conn.execute(
-                            """
-                            SELECT entity_type, type_description
-                            FROM entity_types
-                            WHERE num_entities > 0
-                            """
-                        )
+                        if include_counts:
+                            cursor = await self.conn.execute(
+                                """
+                                SELECT entity_type, type_description, num_entities
+                                FROM entity_types
+                                WHERE num_entities > 0
+                                """
+                            )
+                        else:
+                            cursor = await self.conn.execute(
+                                """
+                                SELECT entity_type, type_description
+                                FROM entity_types
+                                WHERE num_entities > 0
+                                """
+                            )
                     else:
-                        cursor = await self.conn.execute(
-                            """
-                            SELECT entity_type, type_description
-                            FROM entity_types
-                            """
-                        )
+                        if include_counts:
+                            cursor = await self.conn.execute(
+                                """
+                                SELECT entity_type, type_description, num_entities
+                                FROM entity_types
+                                """
+                            )
+                        else:
+                            cursor = await self.conn.execute(
+                                """
+                                SELECT entity_type, type_description
+                                FROM entity_types
+                                """
+                            )
                 existing_entity_types = await cursor.fetchall()
                 await cursor.close()
                 if existing_entity_types is None:
