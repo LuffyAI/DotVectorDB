@@ -52,6 +52,11 @@ BEGIN
         WHERE chunk_to_entity_mapping.entity_id = NEW.src_entity_id
         LIMIT 1
     );
+
+    UPDATE global_config
+    SET num_relations = MAX(num_relations + 1, 0)
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;
@@ -69,6 +74,11 @@ BEGIN
         WHERE chunk_to_entity_mapping.entity_id = OLD.src_entity_id
         LIMIT 1
     );
+    
+    UPDATE global_config
+    SET num_relations = MAX(num_relations - 1, 0)
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;

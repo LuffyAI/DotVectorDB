@@ -2,13 +2,15 @@ from aiosqlite import cursor
 import igraph as ig
 from collections import defaultdict, deque
 import traceback
+import os
 
 class GraphRetriever():
-    def __init__(self, graph_path, conn, lock):
+    def __init__(self, graph_path, conn, lock, get_num_nodes_edges_func):
         self.conn = conn
         self.graph_path = graph_path
         self.graph = None
         self.lock = lock
+        self.get_num_nodes_edges_func = get_num_nodes_edges_func
     
     ############################################################
     #   Loads Persistent Graph                                 # 
@@ -16,17 +18,45 @@ class GraphRetriever():
     async def load_graph(self, verbose=True):
         if self.conn is None:
             raise ValueError("Database connection is not initialized. Please open the database first.")
+        # Get the number of nodes and edges from the SQL database
+        num_nodes, num_edges = await self.get_num_nodes_edges_func()
         try:
+            # Step One: Attempt to load the graph from the specified path. If it fails, it raises and exception, which creates a new graph.
             self.graph = ig.Graph.Read_Pickle(self.graph_path)
             if verbose:
              print(f"Graph loaded with {self.graph.summary()} nodes and edges.")
              print(f"Graph loaded from {self.graph_path}.")
+            # Step Two: Validate the loaded graph against the database counts. If they don't match, we delete the loaded graph and create a new one.
+            if self.graph.vcount() != num_nodes or self.graph.ecount() != num_edges:
+                print(f"Graph validation failed: Expected {num_nodes} nodes and {num_edges} edges, but got {self.graph.vcount()} nodes and {self.graph.ecount()} edges.")
+                print(f"Deleting the graph at {self.graph_path} and creating a new one.")
+                await self.delete_graph(verbose=verbose)
+                await self.create_graph(verbose=verbose)
             return self.graph
         except Exception as e:
-            traceback.print_exc()
+            # If loading the graph fails, print the traceback and create a new graph.
             print(f"Graph loading failed in load_graph: {e}. Creating new graph.")
             print(f"Graph file not found at {self.graph_path}. Creating new graph.")
             await self.create_graph(verbose=verbose)
+
+    ############################################################
+    #   Deletes Persistent Graph                               # 
+    ############################################################
+    async def delete_graph(self, verbose=True): 
+        try:
+            # Set the graph attribute to None to indicate that there is no graph currently loaded.
+            self.graph = None
+            if os.path.exists(self.graph_path):
+                os.remove(self.graph_path)
+                if verbose:
+                    print(f"Graph file {self.graph_path} deleted.")
+            else:
+                if verbose:
+                    print(f"Graph file {self.graph_path} does not exist. Nothing to delete.")
+        except Exception as e:
+            traceback.print_exc()
+            print(f"Graph deletion failed in delete_graph: {e}.")
+            raise e
 
     ############################################################
     #   Persistent & Temporary Graph Creation Operations       # 

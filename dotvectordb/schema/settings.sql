@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS global_config (
     description JSON,
     DIM INTEGER,
     embedding_model_id INTEGER,
+    num_chunks INTEGER,
+    num_entities INTEGER,
+    num_relations INTEGER,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE SET NULL
 );
 

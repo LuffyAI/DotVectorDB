@@ -67,7 +67,9 @@ class DotVectorDB:
         await self.initialize_default_schema()
         replace_period_with_underscore = self.path.replace(".", "_")
         self.graph_path = f"""{replace_period_with_underscore}_graph.pkl"""
-        self.graph_retriever = GraphRetriever(graph_path=f"""{self.graph_path}""", conn=self.conn, lock=self.lock)
+        self.graph_retriever = GraphRetriever(graph_path=f"""{self.graph_path}""", 
+                                              conn=self.conn, lock=self.lock, 
+                                              get_num_nodes_edges_func=self.get_num_of_entities_and_relationships)
         self.DIM = await self.get_embedding_dim()
         if self.verbose:
             print("DotVectorDB initialized successfully.")
@@ -198,6 +200,18 @@ class DotVectorDB:
     ############################################################
     #   Accessor Functions                                     # 
     ############################################################
+    async def get_num_of_entities_and_relationships(self):
+        """Returns the number of entities and relationships in the database"""
+        if not self.conn:
+            raise RuntimeError("Database connection is not open.")
+        async with self.lock:
+            cursor = await self.conn.execute("SELECT num_entities, num_relations FROM global_config WHERE id = 1")
+            result = await cursor.fetchone()
+            await cursor.close()
+            num_entities = result[0] if result[0] is not None else 0
+            num_relationships = result[1] if result[1] is not None else 0
+        return num_entities, num_relationships
+           
     async def get_entity_types(self, only_populated=False, include_counts=False):
             """Gets entity types from the database and returns them as a dictionary"""
             if not self.conn:
@@ -291,7 +305,7 @@ class DotVectorDB:
                 async with self.lock:
                     cursor = await self.conn.execute(
                         """
-                        SELECT current_version_count, description_version, description
+                        SELECT current_version_count, description_version, description, DIM, embedding_model_id, num_chunks, num_entities, num_relations
                         FROM global_config
                         WHERE id = 1
                         """
@@ -304,6 +318,11 @@ class DotVectorDB:
                         "current_version_count": global_config[0],
                         "description_version": global_config[1],
                         "description": global_config[2],
+                        "DIM": global_config[3],
+                        "embedding_model_id": global_config[4],
+                        "num_chunks": global_config[5],
+                        "num_entities": global_config[6],
+                        "num_relations": global_config[7]
                     }
             except Exception as e:
                 traceback.print_exc()
@@ -651,6 +670,14 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
+
+        # Lastly, we need to generate the graph representation of the database.
+        try:
+            await self.graph_retriever.load_graph()
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating the graph representation: {e}") 
+        
         if self.verbose:
             print("Graph construction completed successfully.")
     ############################################################

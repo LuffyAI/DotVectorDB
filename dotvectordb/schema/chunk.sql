@@ -12,16 +12,18 @@ CREATE TABLE IF NOT EXISTS embedding_model (
     PRIMARY KEY (id)
 );
 
-
 INSERT OR IGNORE INTO global_config (
     id,
     current_version_count,
     description_version,
     description,
     DIM,
-    embedding_model_id
+    embedding_model_id,
+    num_chunks,
+    num_entities,
+    num_relations
 )
-VALUES (1, 0, 0, NULL, NULL, NULL);
+VALUES (1, 0, 0, NULL, NULL, NULL, 0, 0, 0);
 /*********************************
 ----> Source <----
 Purpose: This file contains the source schema for the database. A source is a document that is ingested into the system and can be chunked into smaller pieces for processing. Each source has a unique id, name, and description. The description is a JSON object that can contain information such as the source's origin, content, and any other relevant details.
@@ -87,6 +89,11 @@ BEGIN
     UPDATE source
     SET num_chunks = num_chunks + 1 
     WHERE id = NEW.source_id;
+
+    UPDATE global_config
+    SET num_chunks = num_chunks + 1
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;
@@ -97,6 +104,11 @@ BEGIN
     UPDATE source
     SET num_chunks = MAX(num_chunks - 1, 0)
     WHERE id = OLD.source_id;
+
+    UPDATE global_config
+    SET num_chunks = MAX(num_chunks - 1, 0)
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;

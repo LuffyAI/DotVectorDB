@@ -67,6 +67,11 @@ BEGIN
     UPDATE entity_types
     SET num_entities = num_entities + 1
     WHERE entity_type = NEW.entity_type;
+
+    UPDATE global_config
+    SET num_entities = MAX(num_entities + 1, 0)
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;
@@ -77,6 +82,11 @@ BEGIN
     UPDATE entity_types
     SET num_entities = MAX(num_entities - 1, 0)
     WHERE entity_type = OLD.entity_type;
+
+    UPDATE global_config
+    SET num_entities = MAX(num_entities - 1, 0)
+    WHERE id = 1;
+
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;
