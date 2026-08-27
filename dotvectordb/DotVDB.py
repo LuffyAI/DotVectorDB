@@ -283,7 +283,6 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the get_embedding_dim function inside DotVectorDB: {e}")
-
     async def get_global_config(self):
             """Gets the global configuration metadata from the database"""
             if not self.conn:
@@ -339,7 +338,6 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the set_embedding_dim function inside DotVectorDB: {e}")
-
     async def update_global_description(self, description, description_version):
                 """Updates the global description and its database version"""
                 if not self.conn:
@@ -735,28 +733,34 @@ class DotVectorDB:
 
         # Compare the similarity between two entities relative to the centroid's embedding
         SQL = f"""
-        SELECT 
-          1.0 / (1.0 + {distance_func}(v1.embedding, v2.embedding)) AS similarity_score
-        FROM entity_embeddings(:centroid_entity_id) AS v1
-        JOIN entity_embeddings(:comparsion_entity_id) AS v2
-        ON v1.rowid = :centroid_entity_id AND v2.rowid = :comparsion_entity_id; 
-        """
+            SELECT
+                1.0 / (1.0 + {distance_func}(v1.embedding, v2.embedding))
+                AS similarity_score,
+                e.entity_name
+            FROM entity_embeddings AS v1
+            JOIN entity_embeddings AS v2
+            JOIN entity AS e
+            ON e.entity_id = v2.rowid
+            WHERE v1.rowid = :centroid_entity_id
+            AND v2.rowid = :comparison_entity_id;
+            """
         try:
             async with self.conn.execute(
                 SQL,
                 {
                     "centroid_entity_id": centroid_entity_id,
-                    "comparsion_entity_id": comparsion_entity_id,
+                    "comparison_entity_id": comparsion_entity_id,
                 },
             ) as cursor:
                 row = await cursor.fetchone()
                 if row is None:
                     raise RuntimeError("No similarity score found for the given entity IDs.")
                 similarity_score = row[0]
+                comparsion_entity_name = row[1]
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the compare_two_entities function inside DotVectorDB: {e}")
-        return centroid_entity_id, comparsion_entity_id, similarity_score
+        return (comparsion_entity_id, comparsion_entity_name), similarity_score
     async def vector_search(self, query, table, top_k=40, KNN=True, distance_metric="l2"):
             if not self.conn:
                     raise RuntimeError("Database not opened") 

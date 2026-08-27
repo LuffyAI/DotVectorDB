@@ -13,7 +13,7 @@ setup(
     description="DotVectorDB is a simple, transparent vector and graph database that makes building GraphRAG pipelines easier without hiding the underlying process.",
 
     # Displayed on the PyPI project page
-    long_description=(root / "README.MD").read_text(encoding="utf-8"),
+    long_description=(root / "README.md").read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
 
     author="Larnell Moore",
