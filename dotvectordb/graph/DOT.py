@@ -1,0 +1,24 @@
+class DOT:
+    def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, llm_judge_rubric_dict):
+        """
+        Initializes a DOT (Division of Thought) instance with the provided parameters.
+        A DOT (“Division of Thought”) packages everything needed to explore one promising region of a knowledge graph and decide which reasoning paths are valid.
+        - centroid_id: The ID of the centroid entity anchoring this DOT. The centroid represents one semantic region predicted to be important for answering the query.
+        - semantic_neighborhood: A list of entities found to be semantically similar to our centroid entity. This covers possible aliases or related entities that may be relevant to the query.
+        - vector_indices: Each relationship in the graph has a vector index. This is a list of the vector indices for the edges in the temporary graph that will be used to construct the DOT's temporary vector store, thus letting us perform semantic retrieval over relationships in that subgraph.
+        - temp_graph: A pruned, query-specific graph rather than searching the entire knowledge graph, containing only relevant entities and edges that can be traversed to the centroid or an entity in the related entity cluster. We use this to apply pathfinding algorithms.
+        - llm_judge_rubric_dict: A dictionary containing the rubric for judging the validity of retrieved paths from the graph. This is used to determine which paths should be considered for the final context and which not.
+        - memory_dict: Mutable retrieval state containing evidence, paths, decisions, or other information accumulated while exploring this DOT.
+        """
+        self.centroid_id = centroid_id
+        self.semantic_neighborhood = semantic_neighborhood
+        self.vector_indices = vector_indices
+        self.temp_graph = temp_graph
+        self.llm_judge_rubric_dict = llm_judge_rubric_dict
+        self.memory_dict = {
+            "previous_queries": [],
+            "next_queries": [],
+            "accepted_paths": [],
+            "rejected_paths": [],
+        }
+    

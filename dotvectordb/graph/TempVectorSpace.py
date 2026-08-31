@@ -1,5 +1,4 @@
 import uuid
-
 class AsyncTempVectorSpace:
     def __init__(self, conn, lock, tids, memory=None, verbose=False, **kwargs):
         self.conn = conn
@@ -8,9 +7,10 @@ class AsyncTempVectorSpace:
         self.lock = lock
         self.verbose = verbose
         self.tids = tids
-
     async def __aenter__(self):
         async with self.lock:
+            if not self.conn:
+                raise RuntimeError("Database connection is not open.")
             for tid in self.tids:
                 table_name = f"temp_vector_search_{self.wid}_{tid}"
                 await self.conn.execute(f"""
@@ -20,19 +20,16 @@ class AsyncTempVectorSpace:
                 if self.verbose:
                  print(f"Created temporary vector search tables for tid {tid} with workspace id {self.wid}")
             return self
-
     async def __aexit__(self, exc_type, exc, tb):
         async with self.lock:
              if self.verbose:
               print(f"Cleaning up temporary vector search tables for workspace id {self.wid}...")
-
              for tid in self.tids:
                  table_name = f"temp_vector_search_{self.wid}_{tid}"
                  await self.conn.execute(f"DROP TABLE IF EXISTS temp.{table_name}")
                  if self.verbose:
                   print(f"Dropped temporary vector search tables for tid {tid} with workspace id {self.wid}")
              await self.conn.commit()
-
     async def copy_and_move_embeddings_to_temp(self, from_table, tid, ids):
        async with self.lock:
                 table_name = f"temp_vector_search_{self.wid}_{tid}"
@@ -47,7 +44,5 @@ class AsyncTempVectorSpace:
                 )
                 if self.verbose:
                  print(f"Copied embeddings from {from_table} to temporary table {table_name} for tid {tid}")
-          
-
     async def remove_embeddings_from_temp():
        pass

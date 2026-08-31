@@ -35,8 +35,7 @@ class GraphRetriever():
             return self.graph
         except Exception as e:
             # If loading the graph fails, print the traceback and create a new graph.
-            print(f"Graph loading failed in load_graph: {e}. Creating new graph.")
-            print(f"Graph file not found at {self.graph_path}. Creating new graph.")
+            print(f"Graph file for current database version not found at {self.graph_path}. Attempting to create a new graph.")
             await self.create_graph(verbose=verbose)
 
     ############################################################
@@ -77,7 +76,7 @@ class GraphRetriever():
                 g.add_vertices([str(node[0]) for node in nodes], attributes={"entity_type": [node[1] for node in nodes]})
                 g.add_edges([(str(edge[1]), str(edge[2])) for edge in edges], attributes={"relation_id": [edge[0] for edge in edges]})
                 g.write_pickle(self.graph_path)
-                self.graph = await self.load_graph(verbose=verbose)
+            self.graph = await self.load_graph(verbose=verbose)
         except Exception as e:
             traceback.print_exc()
             print(f"Graph creation failed in create_graph: {e}.")

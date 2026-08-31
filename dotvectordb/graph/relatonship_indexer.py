@@ -99,13 +99,13 @@ class RelationshipIndexer:
         # We call the language model with the filled prompt and expect a response in the format of ExtractedEntitiesResponse.
         try:
           response = await self.language_model(RELATIONSHIP_PROMPT_FILLED, structuredInput=Relationship)
-          print(f"Extracted relationships Response: {json.dumps(response, indent=2)}")
         except Exception as e:
            print(f"Error extracting relationships: {e}")
-           return
+           return 0
 
         async with self.lock:
             try:
+                new_relationships_added = 0
                 for relation in response[0]["relations"]:
                     # We extract key metadata from the LLM response to add to the database.
                     relation_str = json.dumps(relation, indent=2)
@@ -135,6 +135,7 @@ class RelationshipIndexer:
                     if not existing_relation:
                         await self.conn.execute("INSERT INTO relationship (relation_id, src_entity_id, dst_entity_id, relation_description, embedding_model_id, questions, tokens) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                                 (relation_id_hash, true_src_entity_id, true_dst_entity_id, description, embedding_model_hash_str, json.dumps(questions), tokens))
+                        new_relationships_added += 1
                     else:
                         old_description = existing_relation[0]
                         old_questions = json.loads(existing_relation[1])
@@ -157,9 +158,11 @@ class RelationshipIndexer:
                         )
                 await self.conn.execute("UPDATE chunk SET are_relations_extracted = 1 WHERE chunk_id = ?", (chunk_hash,))
                 await self.conn.commit()
-            except:
+                return new_relationships_added
+            except Exception as e:
                 traceback.print_exc()
                 print(f"Error saving extracted relationships to database: {e}")
+                return 0
 
     async def extract_relations_from_chunks(self, async_cooldown=60,requests_per_minute=1000,verbose=True):
         # Check if the database connection is established
@@ -173,6 +176,13 @@ class RelationshipIndexer:
             print(f"Found {len(chunks)} chunks waiting for relationship extraction.")
 
         total_chunks = len(chunks)
+
+        # We do not know how many unique entities will be added in advance.
+        relation_progress = tqdm_asyncio(
+        total=None,
+        desc=" Extracting Relationships",
+        bar_format="{desc}: {n} relationships [{elapsed}, {rate_fmt}]"
+        )
 
         # We process the chunks in batches starting from 0 to the total number of chunks, with a step size of requests_per_minute.
         for batch_start in range(0, total_chunks, requests_per_minute):
@@ -197,6 +207,11 @@ class RelationshipIndexer:
                 *tasks,
                 return_exceptions=True
             )
+            # Each successful result is the number of NEW relationships
+            # inserted by extract_relation().
+            for result in results:
+                if not isinstance(result, Exception):
+                    relation_progress.update(result)
 
             if verbose:
                 batch_number = (
@@ -264,18 +279,13 @@ class RelationshipIndexer:
                 remaining_relationships = failed_relationships[requests_per_minute:]
                 failed_relationships = []
 
-                if verbose:
-                    print(f"Sending batch of {len(current_batch)} relationships to embedding model...")
-
-                    batch_results = await tqdm_asyncio.gather(
+            
+                batch_results = await tqdm_asyncio.gather(
                         *(embed_relationship(relationship) for relationship in current_batch),
                         desc="Embedding relationships",
                         total=len(current_batch)
                     )
-                else:
-                    batch_results = await asyncio.gather(
-                        *(embed_relationship(relationship) for relationship in current_batch)
-                    )
+              
 
                 failed_relationships.extend([
                     relationship for relationship in batch_results

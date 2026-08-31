@@ -1,11 +1,11 @@
 import asyncio
 import json
+from tqdm.asyncio import tqdm_asyncio
 from dotvectordb.prompts.global_desc_prompt import (
     GLOBAL_CHUNK_PROMPT,
     GLOBAL_DESCRIPTION_PROMPT,
     GLOBAL_TYPE_PROMPT,
 )
-
 
 class GlobalDescriptionGenerator:
     def __init__(self, conn, lock, language_model, entity_types, sources,
@@ -170,7 +170,7 @@ class GlobalDescriptionGenerator:
                 f"Sending {len(self.entity_types)} entity-type description "
                 "request(s) and 1 chunk-description request concurrently."
             )
-        descriptions = await asyncio.gather(
+        descriptions = await tqdm_asyncio.gather(
             *(
                 self.generate_type_description(
                     entity_type=entity_type,
@@ -184,6 +184,7 @@ class GlobalDescriptionGenerator:
                 source_names=source_names,
                 sample_size=sample_size,
             ),
+            desc="Sampling entity types & chunks to infer a global description",
         )
         type_results = descriptions[:-1]
         chunk_description = descriptions[-1]
@@ -217,6 +218,7 @@ class GlobalDescriptionGenerator:
             description=result,
             description_version=current_version,
         )
+        print(f"Global description generated and saved at version {current_version}.")
         if self.verbose:
             print(
                 "Saved the global description to global_config at version "

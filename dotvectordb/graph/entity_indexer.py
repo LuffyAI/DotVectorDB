@@ -105,14 +105,14 @@ class EntityIndexer:
         # We call the language model with the filled prompt and expect a response in the format of ExtractedEntitiesResponse.
         try:
           response = await self.language_model(ENTITY_RECOGNITION_PROMPT_FILLED, structuredInput=ExtractedEntitiesResponse)
-          print(f"Extracted entities Response: {json.dumps(response, indent=2)}")
         except Exception as e:
            traceback.print_exc()
            print(f"Error extracting entities: {e}")
-           return
+           return 0
 
         async with self.lock:
             try:
+                new_entities_added = 0
                 for entity in response[0]["entities"]:
                     # We extract key metadata from the LLM response to add to the database.
                     # We normalize the enrity name to lowercase and map the entity type number back to its string representation.
@@ -142,6 +142,7 @@ class EntityIndexer:
                     if not existing_entity:
                         await self.conn.execute("INSERT INTO entity (entity_id, entity_name, entity_type, entity_description, questions, embedding_model_id, tokens) VALUES (?, ?, ?, ?, ?, ?, ?)",
                                                 (entity_id, entity_name, entity_type, entity_description, json.dumps(questions), embedding_model_hash_str, tokens))
+                        new_entities_added += 1
                     else:
                         old_description = existing_entity[0]
                         old_questions = json.loads(existing_entity[1])
@@ -164,11 +165,15 @@ class EntityIndexer:
                         )
                     await self.conn.execute("UPDATE chunk SET are_entities_extracted = 1 WHERE chunk_id = ?", (chunk_hash,))
                     await self.conn.execute("INSERT INTO chunk_to_entity_mapping (chunk_id, entity_id) VALUES (?, ?)", (chunk_hash, entity_id))
+                # IMPORTANT: We only commit the transaction after all entities from the chunk have been processed.
                 await self.conn.commit()
+                # Tells caller how many were extracted
+                return new_entities_added
             except Exception as e:
                 await self.conn.rollback()
                 traceback.print_exc()
                 print(f"Error saving extracted entities to database: {e}")
+                return 0
 
     async def extract_entities_from_ingested_chunks(self, async_cooldown=60, requests_per_minute=1000, verbose=True):
         if not self.conn:
@@ -191,6 +196,14 @@ class EntityIndexer:
             raise ValueError("async_cooldown must be greater than 0")
         
         total_chunks = len(chunks)
+
+        # We do not know how many unique entities will be added in advance.
+        entity_progress = tqdm_asyncio(
+        total=None,
+        desc="Extracting Entities",
+        bar_format="{desc}: {n} entities [{elapsed}, {rate_fmt}]"
+        )
+
         # We process the chunks in batches starting from 0 to the total number of chunks, with a step size of requests_per_minute.
         for batch_start in range(0, total_chunks, requests_per_minute):
             batch = chunks[
@@ -210,6 +223,12 @@ class EntityIndexer:
                 *tasks,
                 return_exceptions=True
             )
+
+            # Each successful result is the number of NEW entities
+            # inserted by extract_entity().
+            for result in results:
+                if not isinstance(result, Exception):
+                    entity_progress.update(result)
 
             if verbose:
                 batch_number = (
