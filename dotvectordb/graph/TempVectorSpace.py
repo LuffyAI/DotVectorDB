@@ -1,6 +1,7 @@
 import uuid
 class AsyncTempVectorSpace:
-    def __init__(self, conn, lock, DOTs, conn_check_func, verbose=False, **kwargs):
+    def __init__(self, query, conn, lock, DOTs, conn_check_func, verbose=False, **kwargs):
+        self.query = query
         self.conn = conn
         self.wid = uuid.uuid4().hex[:8]            
         self.DOTs = DOTs
@@ -19,17 +20,17 @@ class AsyncTempVectorSpace:
                 await self._copy_and_move_embeddings_to_temp(DOT)
                 if self.verbose:
                  print(f"Created temporary vector search tables for tid {DOT.centroid_id} with workspace id {self.wid}")
-            await self.conn.commit()
+                await self.conn.commit()
         return self
     async def __aexit__(self, exc_type, exc, tb):
         async with self.lock:
              if self.verbose:
               print(f"Cleaning up temporary vector search tables for workspace id {self.wid}...")
              for DOT in self.DOTs:
-                 vector_store_query = DOT.close_temp_vector_space_sql_query(self.wid)
-                 await self.conn.execute(vector_store_query)
-                 if self.verbose:
-                  print(f"Dropped temporary vector search tables for tid {DOT.centroid_id} with workspace id {self.wid}")
+                    vector_store_query = DOT.close_temp_vector_space_sql_query(self.wid)
+                    await self.conn.execute(vector_store_query)
+                    if self.verbose:
+                     print(f"Dropped temporary vector search tables for tid {DOT.centroid_id} with workspace id {self.wid}")
              await self.conn.commit()
     ############################################################
     #   Helper Functions For Temp Vector Spaces                # 

@@ -1,3 +1,4 @@
+import uuid
 class DOT:
     def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, llm_judge_rubric_dict):
         """
@@ -11,11 +12,10 @@ class DOT:
         - memory_dict: Mutable retrieval state containing evidence, paths, decisions, or other information accumulated while exploring this DOT.
         """
         self.centroid_id = centroid_id
-        self.sql_table_name = f"temp_vector_search_{self.centroid_id}"
+        self.sql_table_name = self.prepare_table_name()
         self.semantic_neighborhood = semantic_neighborhood
         self.vector_indices = vector_indices
         self.temp_graph = temp_graph
-    
         self.llm_judge_rubric_dict = llm_judge_rubric_dict
         self.memory_dict = {
             "previous_queries": [],
@@ -23,6 +23,12 @@ class DOT:
             "accepted_paths": [],
             "rejected_paths": [],
         }
+    def prepare_table_name(self):
+        if self.centroid_id < 0:
+            sql_table_name = f"temp_vector_search_neg_{abs(self.centroid_id)}_{uuid.uuid4().hex[:8]}"
+        else:
+            sql_table_name = f"temp_vector_search_{self.centroid_id}_{uuid.uuid4().hex[:8]}"
+        return sql_table_name
     def prepare_temp_vector_space_sql_query(self, workspace_id):
         return f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS temp.{self.sql_table_name}_{workspace_id}

@@ -821,17 +821,19 @@ class DotVectorDB:
             traceback.print_exc()
             raise RuntimeError(f"Error in the compare_two_entities function inside DotVectorDB: {e}")
         return (comparsion_entity_id, comparsion_entity_name), similarity_score
-    async def vector_search(self, query, table, top_k=40, KNN=True, distance_metric="l2") -> tuple[list[dict], int]:
+    async def vector_search(self, query, table, top_k=40, embedding_table=None, KNN=True, distance_metric="l2") -> tuple[list[dict], int]:
             self.__require_open_connection()
             query_embedding, query_tokens = await self.embedding_model.embed(query)
             distance_func = self.__get_distance_func(distance_metric)
+            if embedding_table is None:
+                embedding_table = f"{table}_embeddings"
             if KNN:
                 SQL = f"""
                 SELECT
                     v.rowid AS vector_rowid,
                     m.*,
                     1.0 / (1.0 + {distance_func}(:query_embedding, v.embedding)) AS similarity_score
-                FROM {table}_embeddings(:query_embedding, '{{k: {top_k}}}') AS v
+                FROM {embedding_table}(:query_embedding, '{{k: {top_k}}}') AS v
                 JOIN {table} AS m
                     ON m.rowid = v.rowid
                 ORDER BY similarity_score DESC
@@ -845,7 +847,7 @@ class DotVectorDB:
                     SELECT
                         v.rowid,
                         v.embedding
-                    FROM {table}_embeddings(:query_embedding, '{{k: {rerank_k}, nprobe: 0.08}}') AS v
+                    FROM {embedding_table}(:query_embedding, '{{k: {rerank_k}, nprobe: 0.08}}') AS v
                 )
                 SELECT
                     c.rowid AS vector_rowid,
@@ -881,7 +883,7 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_temp_graph function inside DotVectorDB: {e}")
-    async def subgraph_constrained_semantic_retrieval(self, custom_search_algo, DOTs, **kwargs):
+    async def subgraph_constrained_semantic_retrieval(self, query, custom_search_algo, DOTs, **kwargs):
             """
             In this code, you would open TempVectorSpace() and close tempvector space by the end of the function.
             It essentially creates a temporary vector space that is opened annd closed by the end of this function.
@@ -889,7 +891,7 @@ class DotVectorDB:
             """
             self.__require_open_connection()
             gathered_results = None
-            async with AsyncTempVectorSpace(conn=self.conn, DOTs=DOTs, conn_check_func=self.__require_open_connection, lock=self.lock) as QueryWS:
+            async with AsyncTempVectorSpace(query=query, conn=self.conn,DOTs=DOTs, conn_check_func=self.__require_open_connection, lock=self.lock) as QueryWS:
                 # The custom_search_algo should be some DOT-based retrieval algorithm
                 # The search is performed concurrently for each DOT
                 gathered_results = await asyncio.gather(
