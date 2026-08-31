@@ -11,9 +11,11 @@ class DOT:
         - memory_dict: Mutable retrieval state containing evidence, paths, decisions, or other information accumulated while exploring this DOT.
         """
         self.centroid_id = centroid_id
+        self.sql_table_name = f"temp_vector_search_{self.centroid_id}"
         self.semantic_neighborhood = semantic_neighborhood
         self.vector_indices = vector_indices
         self.temp_graph = temp_graph
+    
         self.llm_judge_rubric_dict = llm_judge_rubric_dict
         self.memory_dict = {
             "previous_queries": [],
@@ -21,4 +23,13 @@ class DOT:
             "accepted_paths": [],
             "rejected_paths": [],
         }
+    def prepare_temp_vector_space_sql_query(self, workspace_id):
+        return f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS temp.{self.sql_table_name}_{workspace_id}
+                USING vec1(embedding);
+                """
+    def close_temp_vector_space_sql_query(self, workspace_id):
+        return f"""
+                DROP TABLE IF EXISTS temp.{self.sql_table_name}_{workspace_id};
+                """
     

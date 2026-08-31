@@ -881,14 +881,21 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_temp_graph function inside DotVectorDB: {e}")
-    async def subgraph_constrained_semantic_retrieval(self, custom_func, temp_vector_space_names, memoryHandler=None, **kwargs):
+    async def subgraph_constrained_semantic_retrieval(self, custom_search_algo, DOTs, **kwargs):
             """
             In this code, you would open TempVectorSpace() and close tempvector space by the end of the function.
             It essentially creates a temporary vector space that is opened annd closed by the end of this function.
             between the two functions will be the custom function you want to run inside the temmp vector space. it should return whatever results you wan
             """
             self.__require_open_connection()
-            results = None
-            async with AsyncTempVectorSpace(conn=self.conn, tids=temp_vector_space_names, lock=self.lock, memory=memoryHandler) as QueryWS:
-                results, tokens = await custom_func(QueryWS, **kwargs)
-            return results, tokens
+            gathered_results = None
+            async with AsyncTempVectorSpace(conn=self.conn, DOTs=DOTs, conn_check_func=self.__require_open_connection, lock=self.lock) as QueryWS:
+                # The custom_search_algo should be some DOT-based retrieval algorithm
+                # The search is performed concurrently for each DOT
+                gathered_results = await asyncio.gather(
+                *(
+                    custom_search_algo(QueryWS, DOT, **kwargs)
+                    for DOT in DOTs
+                )
+            )
+            return gathered_results
