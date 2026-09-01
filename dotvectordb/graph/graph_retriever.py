@@ -124,18 +124,26 @@ class GraphRetriever():
     ############################################################
     #            Graph Retrieval Algorithms                    # 
     ############################################################
+    async def get_igraph_index(self, entity_id):
+        """Retrieve the igraph index of a given entity ID."""
+        try:
+            vertex = self.graph.vs.find(name=str(entity_id))
+            return vertex.index
+        except ValueError:
+            raise KeyError(f"Entity does not exist: {entity_id}")
     async def shortest_k_paths(self, graph, src, dst, k=10):
-         return graph.get_k_shortest_paths(
-            src,
-            to=dst,
+        """Retrieve the k shortest paths between two nodes in the graph."""
+        src_index = await self.get_igraph_index(src)
+        dst_index = await self.get_igraph_index(dst)
+        return graph.get_k_shortest_paths(
+            src_index,
+            to=dst_index,
             k=k,
             weights=None  
         )
-    
     async def low_level_search_lightrag_style(self, graph, node_ids, k=10):
         """Retrieve the adjacent neighbors of the specified node IDs in the graph."""
         pass
-
     async def bfs_weight_propagation(
         self,
         starting_node_id,

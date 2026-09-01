@@ -15,6 +15,17 @@ class EntityIndexer:
         self.entity_types = entity_types
 
     ############################################################
+    #   Token Economics Tracking                               # 
+    ############################################################
+    async def save_input_and_output_tokens_for_llm(self, total_tokens):
+            await self.conn.execute(
+                """
+                INSERT INTO llm_token_usage (stage, total_tokens)
+                VALUES (?, ?)
+                """,
+                ("entity", total_tokens)
+            )
+    ############################################################
     #   Fetch Entity-Related Data For Entity Indexing          # 
     ############################################################
     async def get_chunks_waiting_for_entity_extraction(self):
@@ -165,6 +176,8 @@ class EntityIndexer:
                         )
                     await self.conn.execute("UPDATE chunk SET are_entities_extracted = 1 WHERE chunk_id = ?", (chunk_hash,))
                     await self.conn.execute("INSERT INTO chunk_to_entity_mapping (chunk_id, entity_id) VALUES (?, ?)", (chunk_hash, entity_id))
+                # Save LLM token usage for this entity extraction call.
+                await self.save_input_and_output_tokens_for_llm(response[1])
                 # IMPORTANT: We only commit the transaction after all entities from the chunk have been processed.
                 await self.conn.commit()
                 # Tells caller how many were extracted

@@ -53,7 +53,6 @@ class OpenAiAgent(LanguageModel):
                             n=1,
                             response_format=response_format,
                             seed=123456,
-
                             messages=[
                                 {"role": "system", "content": "You are a helpful assistant that helps people find information."},
                                 {"role": "user", "content": f"{prompt}"}
@@ -79,5 +78,5 @@ class OpenAiAgent(LanguageModel):
             )
             llm_response = response.choices[0].message.content
             json_response = json.loads(llm_response)
-        tokens = self.tokenize(llm_response)
-        return json_response, len(tokens)
+        tokens = response.usage.total_tokens
+        return json_response, tokens

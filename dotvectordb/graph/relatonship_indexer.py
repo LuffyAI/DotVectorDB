@@ -12,7 +12,17 @@ class RelationshipIndexer:
         self.hash_func = hash_func
         self.embedding_model = embedding_model
         self.add_embedding_func = add_embedding_func 
-
+    ############################################################
+    #   Token Economics Tracking                               # 
+    ############################################################
+    async def save_input_and_output_tokens_for_llm(self, total_tokens):
+                await self.conn.execute(
+                    """
+                    INSERT INTO llm_token_usage (stage, total_tokens)
+                    VALUES (?, ?)
+                    """,
+                    ("relation", total_tokens)
+                )
     #################################################################
     #   Fetch Relationship-Related Data For Relationship Indexing   # 
     #################################################################
@@ -157,6 +167,7 @@ class RelationshipIndexer:
                         )
                         )
                 await self.conn.execute("UPDATE chunk SET are_relations_extracted = 1 WHERE chunk_id = ?", (chunk_hash,))
+                await self.save_input_and_output_tokens_for_llm(response[1])
                 await self.conn.commit()
                 return new_relationships_added
             except Exception as e:

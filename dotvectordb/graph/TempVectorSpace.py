@@ -23,15 +23,7 @@ class AsyncTempVectorSpace:
                 await self.conn.commit()
         return self
     async def __aexit__(self, exc_type, exc, tb):
-        async with self.lock:
-             if self.verbose:
-              print(f"Cleaning up temporary vector search tables for workspace id {self.wid}...")
-             for DOT in self.DOTs:
-                    vector_store_query = DOT.close_temp_vector_space_sql_query(self.wid)
-                    await self.conn.execute(vector_store_query)
-                    if self.verbose:
-                     print(f"Dropped temporary vector search tables for tid {DOT.centroid_id} with workspace id {self.wid}")
-             await self.conn.commit()
+        pass
     ############################################################
     #   Helper Functions For Temp Vector Spaces                # 
     ############################################################

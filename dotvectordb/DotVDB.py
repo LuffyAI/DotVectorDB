@@ -76,6 +76,24 @@ class DotVectorDB:
         print("==================================================================")
         print(message)
         print("==================================================================")
+    async def __count_llm_tokens(self, stage):
+        self.__require_open_connection()
+        valid_stages = {"entity", "relation", "global_desc", "retrieval"}
+        if stage not in valid_stages:
+            raise ValueError(
+                f"Invalid stage '{stage}'. "
+                f"Must be one of: {', '.join(sorted(valid_stages))}"
+            )
+        cursor = await self.conn.execute(
+            """
+            SELECT COALESCE(SUM(total_tokens), 0)
+            FROM llm_token_usage
+            WHERE stage = ?
+            """,
+            (stage,)
+        )
+        row = await cursor.fetchone()
+        return row[0]
     ############################################################
     #   Functions For Opening and Closing DotVDB               # 
     ############################################################
@@ -182,6 +200,19 @@ class DotVectorDB:
             for schema in schema_list:
                 await self.conn.executescript(schema)
         await self.conn.commit()
+    async def cleanup_temp_tables(self):
+        self.__require_open_connection()
+        async with self.conn.execute("""
+            SELECT name
+            FROM sqlite_temp_master
+            WHERE type = 'table';
+        """) as cursor:
+            tables = await cursor.fetchall()
+            for (table_name,) in tables:
+                await self.conn.execute(
+                    f'DROP TABLE IF EXISTS temp."{table_name}"'
+                )
+            await self.conn.commit()
     async def remove_tables(self, table_names)-> None:
         self.__require_open_connection()
         try:

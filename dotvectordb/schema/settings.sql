@@ -14,7 +14,6 @@ PRAGMA temp_store = MEMORY;
 PRAGMA mmap_size = 30000000000;
 PRAGMA cache_size = -200000;
 PRAGMA foreign_keys = ON;
-
 /*********************************
 ----> global_config <----
 Purpose: This file contains the schema for the global_config metadata in the database.
@@ -37,4 +36,30 @@ CREATE TABLE IF NOT EXISTS global_config (
     num_relations INTEGER,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE SET NULL
 );
+/*********************************
+----> llm_token_usage <----
+Purpose: This file contains the schema for the llm_token_usage metadata in the database.
+- id: This is the primary key for the table and is auto-incremented.
+- database_version: This is the version of the database when the LLM token usage was recorded. It is used to track the token usage over time and is set to the current_version_count from the global_config table.
+- stage: This is a text field that indicates the stage of the construction pipeline, such as "entity", "relation", "global_desc" or "retrieval".
+- total_tokens: This is an integer that records the total number of tokens used by the LLM during the specified stage. It is used to monitor and manage the token usage for cost and performance optimization.
+*********************************/
+CREATE TABLE IF NOT EXISTS llm_token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    database_version INTEGER,
+    stage TEXT NOT NULL,
+    total_tokens INTEGER NOT NULL
+);
 
+CREATE TRIGGER set_llm_token_usage_version
+AFTER INSERT ON llm_token_usage
+FOR EACH ROW
+BEGIN
+    UPDATE llm_token_usage
+    SET database_version = (
+        SELECT current_version_count
+        FROM global_config
+        WHERE id = 1
+    )
+    WHERE id = NEW.id;
+END;

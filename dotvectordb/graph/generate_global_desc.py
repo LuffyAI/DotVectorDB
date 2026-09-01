@@ -21,8 +21,19 @@ class GlobalDescriptionGenerator:
         self.verbose = verbose
         self.debug_mode = debug_mode
 
+    ############################################################
+    #   Token Economics Tracking                               # 
+    ############################################################
+    async def save_input_and_output_tokens_for_llm(self, total_tokens):
+                    await self.conn.execute(
+                        """
+                        INSERT INTO llm_token_usage (stage, total_tokens)
+                        VALUES (?, ?)
+                        """,
+                        ("global_desc", total_tokens)
+                    )
     ##########################################################################
-    #       Fetch Entity Data For Global Description Generation             #
+    #       Fetch Entity Data For Global Description Generation              #
     ##########################################################################
     async def get_random_entity_sample(self, entity_type, sample_size=5):
         if sample_size <= 0:
@@ -109,6 +120,7 @@ class GlobalDescriptionGenerator:
         if self.verbose:
             print(f"Prompt sent to the LLM for entity type '{entity_type}':\n{prompt}")
         response = await self.language_model(prompt)
+        await self.save_input_and_output_tokens_for_llm(response[1])
         description = self.get_answer(response)
         if self.verbose:
             print(f"Generated description for entity type '{entity_type}'.")
@@ -125,6 +137,7 @@ class GlobalDescriptionGenerator:
         if self.verbose:
             print(f"Prompt sent to the LLM for sampled text chunks:\n{prompt}")
         response = await self.language_model(prompt)
+        await self.save_input_and_output_tokens_for_llm(response[1])
         description = self.get_answer(response)
         if self.verbose:
             print("Generated description for sampled text chunks.")
@@ -209,6 +222,7 @@ class GlobalDescriptionGenerator:
         if self.verbose:
             print(f"Final global-description prompt sent to the LLM:\n{prompt}")
         response = await self.language_model(prompt)
+        await self.save_input_and_output_tokens_for_llm(response[1])
         result = {
             "global_description": self.get_answer(response),
             "entity_type_descriptions": type_descriptions,
