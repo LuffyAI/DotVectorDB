@@ -76,7 +76,7 @@ class DotVectorDB:
         print("==================================================================")
         print(message)
         print("==================================================================")
-    async def __count_llm_tokens(self, stage):
+    async def count_llm_tokens(self, stage):
         self.__require_open_connection()
         valid_stages = {"entity", "relation", "global_desc", "retrieval"}
         if stage not in valid_stages:

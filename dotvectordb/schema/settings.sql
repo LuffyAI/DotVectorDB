@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS llm_token_usage (
     total_tokens INTEGER NOT NULL
 );
 
-CREATE TRIGGER set_llm_token_usage_version
+CREATE TRIGGER IF NOT EXISTS set_llm_token_usage_version
 AFTER INSERT ON llm_token_usage
 FOR EACH ROW
 BEGIN

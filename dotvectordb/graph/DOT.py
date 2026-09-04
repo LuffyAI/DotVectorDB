@@ -55,7 +55,7 @@ class PathManager:
         )[:k]
     
 class DOT:
-    def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, llm_judge_rubric_dict):
+    def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, hops, llm_judge_rubric_dict):
         """
         Initializes a DOT (Division of Thought) instance with the provided parameters.
         A DOT (“Division of Thought”) packages everything needed to explore one promising region of a knowledge graph and decide which reasoning paths are valid.
@@ -71,6 +71,7 @@ class DOT:
         self.semantic_neighborhood = semantic_neighborhood
         self.vector_indices = vector_indices
         self.temp_graph = temp_graph
+        self.hops = hops
         self.llm_judge_rubric_dict = llm_judge_rubric_dict
         self.memory_dict = {
             "previous_queries": [],

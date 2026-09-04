@@ -18,8 +18,8 @@ Purpose: This file contains the relationship schema for the database.
 *********************************/
 CREATE TABLE IF NOT EXISTS relationship (
     relation_id INTEGER NOT NULL,
-    src_entity_id TEXT NOT NULL,
-    dst_entity_id TEXT NOT NULL,
+    src_entity_id INTEGER NOT NULL,
+    dst_entity_id INTEGER NOT NULL,
     relation_description TEXT NOT NULL,
     questions JSON NOT NULL,
     tags JSON,
