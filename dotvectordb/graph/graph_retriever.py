@@ -163,126 +163,163 @@ class GraphRetriever():
     #         new_path = Path(entities=current_entities, relationships=current_relationships, description=path_text)
     #         found_paths.append(new_path)
     #     return found_paths, prev_path_set
+    # async def get_shortest_k_paths(
+    #     self,
+    #     graph,
+    #     source,
+    #     destination,
+    #     end_point,
+    #     PathManager,
+    #     k=10,
+    # ):
+    #     """
+    #     Precondition:
+    #         - The graph is already loaded and is an igraph.Graph object.
+    #     Retrieve the k shortest paths between two nodes in the graph.
+    #     """
+    #     # First, we need the corresponding igraph indices for the source, destination, and end_index ids.
+    #     # Source index is the query's centroid
+    #     # Dst index is the source node of the edge we're trying to reach
+    #     # end_index is the other node of the edge we're trying to reach.
+    #     # We use top-k yen shortest path to move for source to dst then append the end_index to the path, if not already in the path 
+    #     source_index = await self.get_igraph_index(entity_id=source, graph=graph)
+    #     dst_index = await self.get_igraph_index(entity_id=destination, graph=graph)
+    #     end_index = await self.get_igraph_index(entity_id=end_point, graph=graph)
+    #     shortest_paths = graph.get_k_shortest_paths(
+    #         source_index,
+    #         to=dst_index,
+    #         k=k,
+    #         weights=None,
+    #     )
+    #     # If no paths are found, then this means there were no paths from the centroid to the edge we wanted to reach.
+    #     if not shortest_paths:
+    #         return False
+
+    #     for path in shortest_paths:
+
+    #         # Skip if this path is already represented by a previously seen path.
+    #         #
+    #         # Stored: [1, 2, 3]
+    #         # Current: [1, 2] -> skip
+    #         #
+    #         # Stored: [1, 2, 3]
+    #         # Current: [1, 2, 4] -> process
+    #         isEndPointInPath = False
+
+    #         if path in prev_path_trie:
+    #             continue
+
+    #         # Add the new path.
+    #         prev_path_trie.add(path)
+
+    #         current_entities = []
+    #         current_relationships = []
+    #         path_text = ""
+
+    #         for vertex_index in path:
+    #             current_node = graph.vs[vertex_index]
+
+    #             entity = Node(
+    #                 entity_id=current_node["name"],
+    #                 entity_name=current_node["entity_name"],
+    #                 entity_type=current_node["entity_type"],
+    #             )
+    #             current_entities.append(entity)
+
+    #             # We need to manually append it to the end
+    #             if isEndPointInPath == False:
+    #                 if path[-1] != end_index:
+    #                  path.append(end_index)
+    #                 isEndPointInPath = True
+
+    #             # We always look one back to find the relationship that connects the previous entity to the current one.
+    #             if len(current_entities) > 1:
+    #                 prev_entity = current_entities[-2]
+    #                 prev_vertex = await self.get_igraph_index(entity_id=prev_entity.entity_id, graph=graph)
+
+    #                 edge_id = graph.get_eid(
+    #                     prev_vertex,
+    #                     vertex_index,
+    #                     directed=True,
+    #                     error=False,
+    #                 )
+
+    #                 if edge_id == -1:
+    #                     edge_id = graph.get_eid(
+    #                         vertex_index,
+    #                         prev_vertex,
+    #                         directed=True,
+    #                         error=False,
+    #                     )
+
+    #                 rel = graph.es[edge_id]
+
+    #                 relationship = Edge(
+    #                     rel_id=rel["relation_id"],
+    #                     src_entity=prev_entity,
+    #                     dst_entity=entity,
+    #                     description=rel["relation_description"],
+    #                 )
+
+    #                 current_relationships.append(relationship)
+
+    #                 path_text += (
+    #                     f"**{prev_entity.entity_name} ({prev_entity.entity_type})** "
+    #                     f"is related to "
+    #                     f"**{entity.entity_name} ({entity.entity_type})** "
+    #                     f"because [{relationship.description}]."
+    #                 )
+
+    
+
+    #         new_path = Path(
+    #             entities=current_entities,
+    #             relationships=current_relationships,
+    #             description=path_text,
+    #         )
+
+    #         found_paths.append(new_path)
+
+    #     return True
+
     async def get_shortest_k_paths(
         self,
         graph,
         source,
         destination,
         end_point,
-        prev_path_trie=None,
+        PathManager,
         k=10,
     ):
         """
-        PreconditionS:
+        Precondition:
             - The graph is already loaded and is an igraph.Graph object.
-        Retrieve the k shortest paths between two nodes in the graph.
+        Retrieve the k shortest paths from the source node to a target edge.
         """
-
-        if prev_path_trie is None:
-            prev_path_trie = PathTrie()
-
-        found_paths = []
-
+        # First, we need the corresponding igraph indices for the source, destination, and end_index ids.
+        # Source index is the query's centroid
+        # Dst index is the source node of the edge we're trying to reach
+        # end_index is the other node of the edge we're trying to reach.
+        # We use top-k yen shortest path to move for source to dst then append the end_index to the path, if not already in the path
         source_index = await self.get_igraph_index(entity_id=source, graph=graph)
         dst_index = await self.get_igraph_index(entity_id=destination, graph=graph)
         end_index = await self.get_igraph_index(entity_id=end_point, graph=graph)
-
         shortest_paths = graph.get_k_shortest_paths(
             source_index,
             to=dst_index,
             k=k,
             weights=None,
         )
-
+        # If no paths are found, then this means there were no paths from the centroid to the edge we wanted to reach.
         if not shortest_paths:
-            return found_paths, prev_path_trie
-
+            return False
         for path in shortest_paths:
-
-            # Skip if this path is already represented by a previously seen path.
-            #
-            # Stored: [1, 2, 3]
-            # Current: [1, 2] -> skip
-            #
-            # Stored: [1, 2, 3]
-            # Current: [1, 2, 4] -> process
-            isEndPointInPath = False
-
-            if path in prev_path_trie:
-                continue
-
-            # Add the new path.
-            prev_path_trie.add(path)
-
-            current_entities = []
-            current_relationships = []
-            path_text = ""
-
-            for vertex_index in path:
-                current_node = graph.vs[vertex_index]
-
-                entity = Node(
-                    entity_id=current_node["name"],
-                    entity_name=current_node["entity_name"],
-                    entity_type=current_node["entity_type"],
-                )
-                current_entities.append(entity)
-
-                # We need to manually append it to the end
-                if isEndPointInPath == False:
-                    if path[-1] != end_index:
-                     path.append(end_index)
-                    isEndPointInPath = True
-
-                # We always look one back to find the relationship that connects the previous entity to the current one.
-                if len(current_entities) > 1:
-                    prev_entity = current_entities[-2]
-                    prev_vertex = await self.get_igraph_index(entity_id=prev_entity.entity_id, graph=graph)
-
-                    edge_id = graph.get_eid(
-                        prev_vertex,
-                        vertex_index,
-                        directed=True,
-                        error=False,
-                    )
-
-                    if edge_id == -1:
-                        edge_id = graph.get_eid(
-                            vertex_index,
-                            prev_vertex,
-                            directed=True,
-                            error=False,
-                        )
-
-                    rel = graph.es[edge_id]
-
-                    relationship = Edge(
-                        rel_id=rel["relation_id"],
-                        src_entity=prev_entity,
-                        dst_entity=entity,
-                        description=rel["relation_description"],
-                    )
-
-                    current_relationships.append(relationship)
-
-                    path_text += (
-                        f"**{prev_entity.entity_name} ({prev_entity.entity_type})** "
-                        f"is related to "
-                        f"**{entity.entity_name} ({entity.entity_type})** "
-                        f"because [{relationship.description}]."
-                    )
-
-    
-
-            new_path = Path(
-                entities=current_entities,
-                relationships=current_relationships,
-                description=path_text,
-            )
-
-            found_paths.append(new_path)
-
-        return found_paths, prev_path_trie
+            complete_path = list(path)
+            # We need to manually append the other endpoint so the path includes the edge we're trying to reach.
+            if end_index not in complete_path:
+                complete_path.append(end_index)
+            PathManager.build_and_add_path(graph, complete_path)
+        return True
 
 #     async def bfs_weight_propagation(
 #         self,
