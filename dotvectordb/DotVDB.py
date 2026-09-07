@@ -25,12 +25,18 @@ import tiktoken
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
     def __init__(self, path: str, 
-                 embedding_model: EmbeddingModel = OpenAIEmbeddingModel() , 
-                 language_model: LanguageModel = OpenAiAgent(), 
+                 embedding_model: EmbeddingModel = None,
+                 language_model: LanguageModel = None,
                  chunking_func: ChunkingFunc = FixedSizeChunker(hash_func=SHA256HashingFunc()),
                  hashing_func: HashingFunc = SHA256HashingFunc(),
-                 tokenizer_name: str = os.getenv("TOKENIZER"),
+                 tokenizer_name: str = None,
                  verbose=False):
+        if embedding_model is None:
+            embedding_model = OpenAIEmbeddingModel(api_key=os.getenv("OPENAI_API_KEY"))
+        if language_model is None:
+            language_model = OpenAiAgent(api_key=os.getenv("OPENAI_API_KEY"))
+        if tokenizer_name is None:
+            tokenizer_name = os.getenv("TOKENIZER")
         self.path = path
         self.tokenizer = tiktoken.encoding_for_model(tokenizer_name)
         self.embedding_model = embedding_model
