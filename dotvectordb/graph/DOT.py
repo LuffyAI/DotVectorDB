@@ -1,7 +1,7 @@
 import uuid
 from dotvectordb.data_structures.path import PathManager
 class DOT:
-    def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, hops, llm_judge_rubric_dict):
+    def __init__(self, centroid_id, semantic_neighborhood, vector_indices, temp_graph, hops, llm_judge_rubric_dict, top_k_paths, tokenizer, max_tokens):
         """
         Initializes a DOT (Division of Thought) instance with the provided parameters.
         A DOT (“Division of Thought”) packages everything needed to explore one promising region of a knowledge graph and decide which reasoning paths are valid.
@@ -23,7 +23,9 @@ class DOT:
             "previous_queries": [],
             "next_queries": [],
         }
-        self.paths = PathManager()
+        self.tokenizer = tokenizer
+        self.max_tokens = max_tokens
+        self.paths = PathManager(tokenizer=tokenizer, max_tokens=max_tokens, top_k=top_k_paths)
     def prepare_table_name(self):
         if self.centroid_id < 0:
             sql_table_name = f"temp_vector_search_neg_{abs(self.centroid_id)}_{uuid.uuid4().hex[:8]}"

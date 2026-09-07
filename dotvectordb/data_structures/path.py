@@ -25,7 +25,7 @@ class Path:
         self.usefulness_score = 0.0
 class PathManager:
     """Keep new candidate paths separate from the current best paths."""
-    def __init__(self, top_k=10, BUFFER_SIZE=40):
+    def __init__(self, tokenizer, max_tokens, top_k=40, BUFFER_SIZE=40):
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
             raise ValueError("top_k must be a non-negative integer")
         self.top_k = top_k
@@ -33,6 +33,8 @@ class PathManager:
         self.path_buffer = []
         self.current_top_paths = []
         self.path_trie = PathTrie()
+        self.tokenizer = tokenizer
+        self.max_tokens = max_tokens
     @staticmethod
     def _relationship_ids(path):
         """Return the ordered relationship sequence used for deduplication."""
@@ -152,3 +154,151 @@ class PathManager:
             }
             for index, path in enumerate(self.path_buffer)
         ]
+    def prepare_batches(self, batch_size, judge_prompt):
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+        if isinstance(judge_prompt, bool) or not isinstance(judge_prompt, str) or not judge_prompt.strip():
+            raise ValueError("judge_prompt must be a non-empty string")
+        if (isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0):
+            raise ValueError("max_tokens must be a positive integer")
+        buffer_json = self.get_buffer_json()
+        judge_prompt_token_size = len(self.tokenizer.encode(judge_prompt))
+        batches = []
+        for start_index in range(0, len(buffer_json), batch_size):
+            buffer_batch = buffer_json[start_index:start_index + batch_size]
+            original_indices = [item["id"] for item in buffer_batch]
+            batch = [
+                {
+                    "id": batch_index,
+                    "path_text": item["path_text"],
+                    "relational_description": item["relational_description"],
+                }
+                for batch_index, item in enumerate(buffer_batch)
+            ]
+            batch_token_size = len(
+            self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            approx_tokens = judge_prompt_token_size + batch_token_size
+            if approx_tokens < self.max_tokens:   
+                batches.append((batch, original_indices))
+            else:
+                overflow = approx_tokens - self.max_tokens
+                extra_batches = self.fix_batch(approx_tokens, overflow, batch, original_indices)
+                for batch, original_indices in extra_batches:
+                    batches.append((batch, original_indices))
+        return batches
+    def fix_batch(
+        self,
+        approx_tokens,
+        overflow,
+        batch,
+        original_indices,
+    ):
+        reduction_percentage = (overflow / approx_tokens) * 100
+        # Try removing optional data unless the batch is far over
+        # and can still be split.
+        if reduction_percentage < 50 or len(batch) == 1:
+            tokens_before = len(
+                self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            self.remove_path_text_from_batch(batch)
+            tokens_after = len(
+                self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            tokens_removed = tokens_before - tokens_after
+            approx_tokens -= tokens_removed
+            overflow -= tokens_removed
+            if overflow <= 0:
+                return [(batch, original_indices)]
+            if reduction_percentage >= 10:
+                overflow_before = overflow
+                overflow = self.remove_extra_evidence_from_batch(
+                    batch,
+                    overflow,
+                )
+                approx_tokens -= overflow_before - overflow
+                if overflow <= 0:
+                    return [(batch, original_indices)]
+        # Trimming did not work, so split the batch.
+        if len(batch) > 1:
+            current_batch_tokens = len(
+                self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            batch_size = self.halve_batch_size(len(batch))
+            extra_batches = []
+
+            for start_index in range(0, len(batch), batch_size):
+                split_batch = batch[
+                    start_index:start_index + batch_size
+                ]
+                split_original_indices = original_indices[
+                    start_index:start_index + batch_size
+                ]
+
+                for batch_index, relationship in enumerate(split_batch):
+                    relationship["id"] = batch_index
+                split_batch_tokens = len(
+                    self.tokenizer.encode(
+                        json.dumps(split_batch, indent=4)
+                    )
+                )
+                split_approx_tokens = (
+                    approx_tokens
+                    - current_batch_tokens
+                    + split_batch_tokens
+                )
+                if split_approx_tokens <= self.max_tokens:
+                    extra_batches.append(
+                        (split_batch, split_original_indices)
+                    )
+                    continue
+                split_overflow = (
+                    split_approx_tokens - self.max_tokens
+                )
+                extra_batches.extend(
+                    self.fix_batch(
+                        split_approx_tokens,
+                        split_overflow,
+                        split_batch,
+                        split_original_indices,
+                    )
+                )
+            return extra_batches
+        raise ValueError(
+            "A single path could not be reduced enough to fit "
+            f"within the {self.max_tokens}-token limit"
+        )
+    def halve_batch_size(self, batch_size):
+        return max(1, batch_size // 2)
+    def remove_path_text_from_batch(self, batch):
+        for relationship in batch:
+            if "path_text" in relationship:
+                del relationship["path_text"]
+    def remove_extra_evidence_from_batch(self, batch, overflow):
+        for relationship in batch:
+            description = relationship["relational_description"]
+            if "<SEP>" not in description:
+                continue
+            tokens_before = len(
+                self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            before_sep, after_sep = description.split("<SEP>", 1)
+            if "]" in after_sep:
+                _, remaining_description = after_sep.split("]", 1)
+                relationship["relational_description"] = (
+                    before_sep + "]" + remaining_description
+                )
+            else:
+                relationship["relational_description"] = before_sep
+            tokens_after = len(  
+                self.tokenizer.encode(json.dumps(batch, indent=4))
+            )
+            overflow -= tokens_before - tokens_after
+            if overflow <= 0:
+                return 0
+        return overflow
+    def save_paths(self, choices, original_indices):
+        for choice in choices:
+            batch_id = choice["id"]
+            original_index = original_indices[batch_id]
+            self.path_buffer[original_index].usefulness_score = choice["judgement"]

@@ -21,6 +21,7 @@ import json
 import aiosqlite
 import asyncio
 import traceback
+import tiktoken
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
     def __init__(self, path: str, 
@@ -31,7 +32,7 @@ class DotVectorDB:
                  tokenizer_name: str = os.getenv("TOKENIZER"),
                  verbose=False):
         self.path = path
-        self.tokenizer_name = tokenizer_name
+        self.tokenizer = tiktoken.encoding_for_model(tokenizer_name)
         self.embedding_model = embedding_model
         self.language_model = language_model
         self.chunking_func = chunking_func
