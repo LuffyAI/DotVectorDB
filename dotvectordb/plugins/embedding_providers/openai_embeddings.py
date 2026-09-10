@@ -4,7 +4,7 @@ Date: 2026-07-03
 Description:
 Wrapper for the OpenAI embedding provider. This calls the OpenAI API's embedding endpoint to generate embeddings for text. It returns a numpy array of floats.
 """
-import openai
+from openai import AsyncOpenAI
 import numpy as np
 import os
 from collections.abc import Awaitable, Callable
@@ -29,7 +29,7 @@ class OpenAIEmbeddingModel(EmbeddingModel):
     async def __get_session(self):
         """Get the OpenAI client."""
         if self._client is None:
-            self._client = openai.OpenAI(api_key=self.api_key)
+            self._client = AsyncOpenAI(api_key=self.api_key)
         return self._client 
     
     async def _call_embedding_model(self, text: str) -> Embedding:
@@ -37,6 +37,7 @@ class OpenAIEmbeddingModel(EmbeddingModel):
         tokens = self.tokenize(text)
         client = await self.__get_session()
         text = text.replace("\n", " ")
-        embedding = client.embeddings.create(input = [text], model=self.model_name).data[0].embedding
+        response = await client.embeddings.create(input=[text], model=self.model_name)
+        embedding = response.data[0].embedding
         arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
         return arr, tokens

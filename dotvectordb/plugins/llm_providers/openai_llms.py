@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Tuple, Optional
 from pydantic import BaseModel, Field
 import json
 from dotvectordb.interfaces.LanguageModel import LanguageModel, FinalResponse
-
 class OpenAiAgent(LanguageModel):
     def __init__(
         self,
@@ -20,7 +19,6 @@ class OpenAiAgent(LanguageModel):
             Tokenizer=Tokenizer,
         )
         self.client = AsyncOpenAI(api_key=self.api_key)
-
     #############################################################################################
     #  LLM call Function                                                                       #                                                          
     #############################################################################################
