@@ -418,6 +418,52 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the get_global_config function inside DotVectorDB: {e}")
+    async def get_chunks_associated_with_entity_id(self, entity_id):
+        """Given an entity_id, this function retrieves all associated chunks from the database."""
+        self.__require_open_connection()
+        try:
+            async with self.lock:
+                cursor = await self.conn.execute(
+                    """
+                    SELECT chunk.*
+                    FROM chunk
+                    JOIN chunk_to_entity_mapping
+                        ON chunk.chunk_id = chunk_to_entity_mapping.chunk_id
+                    WHERE chunk_to_entity_mapping.entity_id = ?
+                    """,
+                    (entity_id,)
+                )
+                rows = await cursor.fetchall()
+                column_names = [description[0] for description in cursor.description]
+                await cursor.close()
+                return [dict(zip(column_names, row)) for row in rows]
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the get_chunks_associated_with_entity_id function inside DotVectorDB: {e}")
+    async def get_chunks_associated_with_two_entities(self, entity_id_one, entity_id_two):
+        """Given two entity IDs, this function retrieves all associated chunks they have in common."""
+        self.__require_open_connection()
+        try:
+            async with self.lock:
+                cursor = await self.conn.execute(
+                    """
+                    SELECT chunk.*
+                    FROM chunk
+                    JOIN chunk_to_entity_mapping AS mapping_one
+                        ON chunk.chunk_id = mapping_one.chunk_id
+                    JOIN chunk_to_entity_mapping AS mapping_two
+                        ON chunk.chunk_id = mapping_two.chunk_id
+                    WHERE mapping_one.entity_id = ? AND mapping_two.entity_id = ?
+                    """,
+                    (entity_id_one, entity_id_two)
+                )
+                rows = await cursor.fetchall()
+                column_names = [description[0] for description in cursor.description]
+                await cursor.close()
+                return [dict(zip(column_names, row)) for row in rows]
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the get_chunks_associated_with_entity_id function inside DotVectorDB: {e}")
     ############################################################
     #   Functions For Adding Text Content to the Database      # 
     ############################################################
