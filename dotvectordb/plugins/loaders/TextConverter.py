@@ -116,7 +116,11 @@ class DocumentTextExtractor:
             if not directory.exists():
                 continue
 
-            files = directory.rglob("*") if recursive else directory.glob("*")
+            # If the provided path is an individual file, process that file directly.
+            if directory.is_file():
+                files = [directory]
+            else:
+                files = directory.rglob("*") if recursive else directory.glob("*")
 
             for file_path in files:
                 if not file_path.is_file():

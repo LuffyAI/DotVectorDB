@@ -124,6 +124,8 @@ class EntityIndexer:
         async with self.lock:
             try:
                 new_entities_added = 0
+                # Set to deduplicate enntities in the case the LLM returns the same entity multiple times in the same response.
+                seen_entity_ids = set()
                 for entity in response[0]["entities"]:
                     # We extract key metadata from the LLM response to add to the database.
                     # We normalize the enrity name to lowercase and map the entity type number back to its string representation.
@@ -135,6 +137,10 @@ class EntityIndexer:
                     # To generate unique entity IDs, we hash the entity name and type.
                     entity_id_original = f"{entity_name}_{entity_type}"
                     entity_id = self.hash_func(entity_id_original)
+                    # Skip duplicate entities extracted from the same chunk.
+                    if entity_id in seen_entity_ids:
+                        continue
+                    seen_entity_ids.add(entity_id)
                     entity_description = entity["entity_description"]
 
                     # We retrieve all predicted questions for the entity and store them in a list.

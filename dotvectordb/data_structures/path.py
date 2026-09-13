@@ -26,6 +26,19 @@ class Path:
 class PathManager:
     """Keep new candidate paths separate from the current best paths."""
     def __init__(self, tokenizer, max_tokens, top_k=40, BUFFER_SIZE=40):
+        """
+        top k: The number of top paths to maintain in memory.
+        BUFFER_SIZE: The number of candidate paths to buffer before promoting the best ones.
+        tokenizer: A tokenizer instance to estimate token counts for batching.
+        max_tokens: The maximum number of tokens allowed in a batch.
+
+        Additional:
+        path_buffer: A list to hold candidate paths before they are promoted to the top paths.
+        current_top_paths: A list to hold the current top paths based on usefulness scores.
+        path_trie: A PathTrie instance to ensure we don't repeat paths with the same relationship sequence or paths
+        that don't add new information (i.e., shorter paths that are subsets of longer paths). It also saves money since
+        LLMs won't re-judge paths that are already judged.
+        """
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
             raise ValueError("top_k must be a non-negative integer")
         self.top_k = top_k
@@ -51,14 +64,31 @@ class PathManager:
         """
         if len(self.path_buffer) >= self.BUFFER_SIZE:
             return
+
+        # First, we get the relationship IDs from the path to use as a key for deduplication.
         relationship_ids = self._relationship_ids(path)
-        if relationship_ids in self.path_trie:
+
+        # We check if the relationship IDs are already in the trie. If they are, we reject the candidate.
+        accepted, old_value = self.path_trie.add(relationship_ids, value=path)
+
+        # If the candidate was accepted and there was an old value, we remove the old value from the buffer.
+        if accepted and old_value is not None:
+            self.remove_path_from_buffer(old_value)
+            self.remove_path_from_top_paths(old_value)
+            
+        # Return False if the candidate was rejected, True if it was accepted.
+        if not accepted:
             return False
-        self.path_trie.add(relationship_ids)
         self.path_buffer.append(path)
-        for entity in path.entities:
-            entity.path_count += 1
-        return 
+        return True
+    def remove_path_from_buffer(self, path):
+        """Remove a path from the candidate buffer."""
+        if path in self.path_buffer:
+            self.path_buffer.remove(path)
+    def remove_path_from_top_paths(self, path):
+        """Remove a path from the current top paths."""
+        if path in self.current_top_paths:
+            self.current_top_paths.remove(path)
     def build_and_add_path(self, graph, vertex_indices):
         """Build a Path from an igraph vertex route and add it to the buffer."""
         if len(vertex_indices) < 2:

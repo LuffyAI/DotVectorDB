@@ -43,7 +43,7 @@ You are a Knowledge Graph Specialist responsible for extracting named entities f
 <Instructions>
 **Named Entity Extraction:**
    - Carefully read the '<Entity_Type>' section to understand the type of named entities that you are looking for.Do not extract anything that does not meet one of the entity type's condition and do not invent any entity types.
-   - Identify all clearly defined and meaningiful entities in the `<Input>` section that match the entity type described in the `<Entity_Type>` section. Extract as many as you can. Each entity can belong to at most one entity type. If an entity can belong to multiple entity types, choose the most specific one.
+   - Identify all clearly defined and meaningiful entities in the `<Input>` section that match the entity type described in the `<Entity_Type>` section. Extract as many as you can. Each entity can belong to at most one entity type. If an entity can belong to multiple entity types, choose the most specific one. Do not extract the same entity multiple times. Ensure that the extracted entities are **unique** and **relevant** to the context of the input text.
     - For each entity, extract:
         - `entity_name`: The exact name of the entity. Ensure **consistent naming** across the entire extraction process.
         - 'entity_type': Categorize the entity using the type guidance provided in the `<Entity_Type>` section. Use the most specific type available. Additionally, use the number associated with the type. 

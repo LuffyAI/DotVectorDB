@@ -123,8 +123,14 @@ class RelationshipIndexer:
                     src_entity_id = relation["src_entity_id"]
                     dst_entity_id = relation["dst_entity_id"]
                     description = relation["description"]
-                    true_src_entity_id = number_to_entity_id_map[src_entity_id]
-                    true_dst_entity_id = number_to_entity_id_map[dst_entity_id]
+                    try:
+                        true_src_entity_id = number_to_entity_id_map[src_entity_id]
+                        true_dst_entity_id = number_to_entity_id_map[dst_entity_id]
+                    except KeyError:
+                        print(f"Invalid relationship entity ID returned by LLM.")
+                        print(f"number_to_entity_id_map: {number_to_entity_id_map}")
+                        print(f"LLM relationship response: {relation}")
+                        raise
 
                     # To generate a unique relation ID, we concatenate the source and destination entity IDs and hash them.
                     relation_id = f"{true_src_entity_id}_{true_dst_entity_id}"
@@ -176,12 +182,19 @@ class RelationshipIndexer:
                 return 0
 
     async def extract_relations_from_chunks(self, async_cooldown=60,requests_per_minute=1000,verbose=True):
-        # Check if the database connection is established
-        if not self.conn:
+     # Check if the database connection is established
+     if not self.conn:
             raise RuntimeError("Database not opened")
         
+     MAX_TRIES = 4
+     TRY = 0
+     while True:
         # First, we pull only the chunks that haven't been processed for relationship extraction yet.
         chunks = await self.get_chunks_waiting_for_relation_extraction()
+        if not chunks or TRY >= MAX_TRIES:
+            break
+
+        TRY += 1
 
         if verbose:
             print(f"Found {len(chunks)} chunks waiting for relationship extraction.")

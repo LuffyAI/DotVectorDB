@@ -353,6 +353,23 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the get_entity_types function inside DotVectorDB: {e}")
+    async def get_specific_entity_types(self, entity_types):
+        self.__require_open_connection()
+        try:
+            async with self.lock:
+                placeholders = ', '.join('?' for _ in entity_types)
+                query = f"""
+                    SELECT entity_type, type_description
+                    FROM entity_types
+                    WHERE entity_type IN ({placeholders})
+                """
+                cursor = await self.conn.execute(query, tuple(entity_types))
+                rows = await cursor.fetchall()
+                await cursor.close()
+                return {row[0]: row[1] for row in rows}
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the get_specific_entity_types function inside DotVectorDB: {e}")
     async def get_sources(self) -> list[dict]:
             """Gets sources from the database and returns them as a list of dictionaries"""
             self.__require_open_connection()

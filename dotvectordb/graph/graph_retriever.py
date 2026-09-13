@@ -121,6 +121,46 @@ class GraphRetriever():
             return vertex.index
         except ValueError:
             raise KeyError(f"Entity does not exist: {entity_id}")
+    async def is_entity_an_island(self, entity_id, graph=None):
+        """Check if a given entity is an island (i.e., has no edges) in the graph."""
+        try:
+            if graph == None:
+                graph = self.graph
+            vertex = await self.get_igraph_index(entity_id=entity_id, graph=graph)
+            return len(graph.incident(vertex, mode="all")) == 0
+        except ValueError:
+            raise KeyError(f"Entity does not exist: {entity_id}")
+    async def get_entity_neighbor_types(
+        self,
+        hops=10,
+        entity_id=None,
+        graph=None,
+    ):
+        """Retrieve neighboring entity types grouped by exact hop."""
+        try:
+            if graph is None:
+                graph = self.graph
+            vertex = await self.get_igraph_index(
+                entity_id=entity_id,
+                graph=graph,
+            )
+            neighbor_types_by_hop = {}
+            for hop in range(1, hops + 1):
+                neighbors = graph.neighborhood(
+                    vertex,
+                    order=hop,
+                    mindist=hop,
+                    mode="all",
+                )
+                neighbor_types_by_hop[hop] = {
+                    graph.vs[neighbor]["entity_type"]
+                    for neighbor in neighbors
+                }
+            return neighbor_types_by_hop
+        except ValueError:
+            raise KeyError(f"Entity does not exist: {entity_id}")
+
+        
     # async def get_shortest_k_paths(self, graph, source, destination, prev_path_trie=None, k=10):
     #     """Retrieve the k shortest paths between two nodes in the graph."""
     #     # We have a root entity and we're finding the shortest to a specific edge. First, we find the shortest paths from root to the source node of the edge.
@@ -456,7 +496,7 @@ class GraphRetriever():
         # ---------------------------------------------------------
         # Ideal for global sensemaking queries where we want to explore the graph as far as possible while still prioritizing the most relevant relationships.
         # e.g., "What is this dataset about is a global sensemaking about the entire corpus"
-        if hop_limit is None or 0:
+        if hop_limit is None or hop_limit == 0:
             queue = deque([
                 (starting_vertex, float(starting_weight))
             ])
