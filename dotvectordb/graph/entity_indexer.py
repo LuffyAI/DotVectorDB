@@ -195,12 +195,20 @@ class EntityIndexer:
                 return 0
 
     async def extract_entities_from_ingested_chunks(self, async_cooldown=60, requests_per_minute=1000, verbose=True):
-        if not self.conn:
-            raise RuntimeError("Database connection is not established")
+      if not self.conn:
+       raise RuntimeError("Database connection is not established")
         
-        # First, we retrieve all the chunks that haven't been processed for entity extraction yet
-        chunks = await self.get_chunks_waiting_for_entity_extraction()
+      # First, we retrieve all the chunks that haven't been processed for entity extraction yet
+      
 
+      MAX_TRIES = 4
+      TRY = 0
+
+      while True:
+        chunks = await self.get_chunks_waiting_for_entity_extraction()
+        if not chunks or TRY >= MAX_TRIES:
+            break
+        TRY += 1
         if verbose:
             print(f"Found {len(chunks)} chunks waiting for entity extraction.")
 
