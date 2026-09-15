@@ -30,6 +30,7 @@ setup(
         "dotvectordb": [
             "compiled_vec1/vec1.so",
             "schema/*.sql",
+            "web_interface/*.html",
         ],
     },
 

@@ -5,6 +5,7 @@ import igraph as ig
 from collections import defaultdict, deque
 import traceback
 import os
+import json
 
 class GraphRetriever():
     def __init__(self, graph_path, conn, lock, get_num_nodes_edges_func):
@@ -63,7 +64,20 @@ class GraphRetriever():
         try:
             async with self.lock:
                 cursor = await self.conn.execute(
-                    "SELECT entity_id, entity_type, entity_name FROM entity"
+                    """
+                    SELECT
+                        entity.entity_id,
+                        COALESCE(
+                            (
+                                SELECT json_group_array(entity_type)
+                                FROM entity_to_entity_type_mapping
+                                WHERE entity_to_entity_type_mapping.entity_id = entity.entity_id
+                            ),
+                            '[]'
+                        ) AS entity_types,
+                        entity.entity_name
+                    FROM entity
+                    """
                 )
                 nodes = await cursor.fetchall()
 
@@ -72,7 +86,7 @@ class GraphRetriever():
                 )
                 edges = await cursor.fetchall()
                 g = ig.Graph(directed=False)
-                g.add_vertices([str(node[0]) for node in nodes], attributes={"entity_type": [node[1] for node in nodes], "entity_name": [node[2] for node in nodes]})
+                g.add_vertices([str(node[0]) for node in nodes], attributes={"entity_type": [json.loads(node[1]) for node in nodes], "entity_name": [node[2] for node in nodes]})
                 g.add_edges([(str(edge[1]), str(edge[2])) for edge in edges], attributes={"relation_id": [edge[0] for edge in edges], "relation_description": [edge[3] for edge in edges]})
                 g.write_pickle(self.graph_path)
             self.graph = await self.load_graph(verbose=verbose)
@@ -140,11 +154,14 @@ class GraphRetriever():
         try:
             if graph is None:
                 graph = self.graph
+
             vertex = await self.get_igraph_index(
                 entity_id=entity_id,
                 graph=graph,
             )
+
             neighbor_types_by_hop = {}
+
             for hop in range(1, hops + 1):
                 neighbors = graph.neighborhood(
                     vertex,
@@ -152,15 +169,18 @@ class GraphRetriever():
                     mindist=hop,
                     mode="all",
                 )
+
                 neighbor_types_by_hop[hop] = {
-                    graph.vs[neighbor]["entity_type"]
+                    entity_type
                     for neighbor in neighbors
+                    for entity_type in graph.vs[neighbor]["entity_type"]
                 }
+
             return neighbor_types_by_hop
+
         except ValueError:
             raise KeyError(f"Entity does not exist: {entity_id}")
-
-        
+            
     # async def get_shortest_k_paths(self, graph, source, destination, prev_path_trie=None, k=10):
     #     """Retrieve the k shortest paths between two nodes in the graph."""
     #     # We have a root entity and we're finding the shortest to a specific edge. First, we find the shortest paths from root to the source node of the edge.
@@ -463,18 +483,18 @@ class GraphRetriever():
 
         Two traversal modes:
 
-        1. hop_limit is None:
+        1. hop_limit is None or 0:
         - Use degree-based weight propagation.
         - Weight is divided across eligible neighboring edges.
         - Traversal continues while propagated weight is positive.
 
-        2. hop_limit is not None:
-        - Do not use weight propagation at all.
+        2. hop_limit is greater than 0:
+        - Do not use weight propagation.
         - Perform ordinary BFS expansion for at most `hop_limit` rounds.
 
         In both modes:
         - The starting node is never filtered by entity type.
-        - Neighbor nodes with banned entity types are skipped.
+        - A neighboring node is skipped only when all its entity types are banned.
         - Banned neighbors are not traversed and their edges are not returned.
         - Each edge is processed at most once.
         """
@@ -482,7 +502,12 @@ class GraphRetriever():
         banned_node_types = set(banned_node_types or [])
         graph = self.graph
 
-        # Resolve the starting entity to its igraph vertex index.
+        def is_node_banned(vertex_id):
+            return all(
+                entity_type in banned_node_types
+                for entity_type in graph.vs[vertex_id]["entity_type"]
+            )
+
         starting_vertex = await self.get_igraph_index(
             entity_id=starting_node_id
         )
@@ -494,8 +519,6 @@ class GraphRetriever():
         # ---------------------------------------------------------
         # MODE 1: No hop limit -> use weight propagation.
         # ---------------------------------------------------------
-        # Ideal for global sensemaking queries where we want to explore the graph as far as possible while still prioritizing the most relevant relationships.
-        # e.g., "What is this dataset about is a global sensemaking about the entire corpus"
         if hop_limit is None or hop_limit == 0:
             queue = deque([
                 (starting_vertex, float(starting_weight))
@@ -504,7 +527,6 @@ class GraphRetriever():
             while queue:
                 vertex_id, weight = queue.popleft()
 
-                # Stop expanding this path once below this threshold.
                 if weight <= 0.01:
                     continue
 
@@ -523,12 +545,7 @@ class GraphRetriever():
                         else source_id
                     )
 
-                    # Filter the node we would expand into.
-                    # The starting node itself is never type-filtered.
-                    if (
-                        graph.vs[neighbor_id]["entity_type"]
-                        in banned_node_types
-                    ):
+                    if is_node_banned(neighbor_id):
                         continue
 
                     eligible_edges.append(
@@ -538,7 +555,6 @@ class GraphRetriever():
                 if not eligible_edges:
                     continue
 
-                # Degree is based only on eligible neighbors.
                 propagated_weight = (
                     weight
                     / (len(eligible_edges) ** degree_exponent)
@@ -564,10 +580,7 @@ class GraphRetriever():
 
         # ---------------------------------------------------------
         # MODE 2: Hop limit provided -> ordinary bounded BFS.
-        # Weight is not used at all.
         # ---------------------------------------------------------
-        # Ideal when we're looking for specific information
-        # e.g, "Compare Elon Musk with Jeff Bezos"
         else:
             queue = deque([
                 (starting_vertex, 0)
@@ -576,7 +589,6 @@ class GraphRetriever():
             while queue:
                 vertex_id, hops = queue.popleft()
 
-                # A node at the hop limit is reached but not expanded.
                 if hops >= hop_limit:
                     continue
 
@@ -593,11 +605,7 @@ class GraphRetriever():
                         else source_id
                     )
 
-                    # Skip only this neighbor if its type is banned.
-                    if (
-                        graph.vs[neighbor_id]["entity_type"]
-                        in banned_node_types
-                    ):
+                    if is_node_banned(neighbor_id):
                         continue
 
                     visited_edges.add(edge_id)

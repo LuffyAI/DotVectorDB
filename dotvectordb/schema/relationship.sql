@@ -33,6 +33,71 @@ CREATE TABLE IF NOT EXISTS relationship (
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS temp_relationship (
+    temp_relation_id INTEGER NOT NULL,
+    src_temp_entity_id INTEGER NOT NULL,
+    dst_temp_entity_id INTEGER NOT NULL,
+    relationship_description TEXT NOT NULL,
+    PRIMARY KEY (temp_relation_id),
+    FOREIGN KEY (src_temp_entity_id)
+        REFERENCES temp_entity(temp_entity_id) ON DELETE CASCADE,
+    FOREIGN KEY (dst_temp_entity_id)
+        REFERENCES temp_entity(temp_entity_id) ON DELETE CASCADE
+);
+
+/*********************************
+----> Entity degree triggers <----
+Purpose: Keep entity degree counts synchronized with temporary and finalized
+relationships. Each relationship contributes one degree to each endpoint.
+*********************************/
+CREATE TRIGGER IF NOT EXISTS increment_temp_entity_degrees
+AFTER INSERT ON temp_relationship
+BEGIN
+    UPDATE temp_entity
+    SET degrees = degrees + 1
+    WHERE temp_entity_id = NEW.src_temp_entity_id;
+
+    UPDATE temp_entity
+    SET degrees = degrees + 1
+    WHERE temp_entity_id = NEW.dst_temp_entity_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS decrement_temp_entity_degrees
+AFTER DELETE ON temp_relationship
+BEGIN
+    UPDATE temp_entity
+    SET degrees = MAX(degrees - 1, 0)
+    WHERE temp_entity_id = OLD.src_temp_entity_id;
+
+    UPDATE temp_entity
+    SET degrees = MAX(degrees - 1, 0)
+    WHERE temp_entity_id = OLD.dst_temp_entity_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS increment_entity_degrees
+AFTER INSERT ON relationship
+BEGIN
+    UPDATE entity
+    SET degrees = degrees + 1
+    WHERE entity_id = NEW.src_entity_id;
+
+    UPDATE entity
+    SET degrees = degrees + 1
+    WHERE entity_id = NEW.dst_entity_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS decrement_entity_degrees
+AFTER DELETE ON relationship
+BEGIN
+    UPDATE entity
+    SET degrees = MAX(degrees - 1, 0)
+    WHERE entity_id = OLD.src_entity_id;
+
+    UPDATE entity
+    SET degrees = MAX(degrees - 1, 0)
+    WHERE entity_id = OLD.dst_entity_id;
+END;
+
 /*********************************
 ----> Increment/Decrement triggers <----
 Purpose: This these triggers are used to automatically update the num_relations field in the source table when relationships are added or removed from the relationship table:
@@ -82,4 +147,3 @@ BEGIN
     UPDATE global_config
     SET current_version_count = current_version_count + 1;
 END;
-

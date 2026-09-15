@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DotVectorDB Graph</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; background: #080b12; color: #edf2ff; }
+    header { height: 64px; display: flex; align-items: center; gap: 18px; padding: 0 20px; border-bottom: 1px solid #242b3b; background: #0d111b; }
+    h1 { margin: 0; font-size: 17px; letter-spacing: .02em; }
+    #stats { color: #99a5bd; font-size: 13px; }
+    header input { margin-left: auto; width: 260px; padding: 9px 12px; color: white; background: #151b29; border: 1px solid #303a50; border-radius: 8px; outline: none; }
+    button { padding: 9px 13px; color: white; background: #506cff; border: 0; border-radius: 8px; cursor: pointer; }
+    main { display: grid; grid-template-columns: 1fr 330px; height: calc(100vh - 64px); }
+    canvas { width: 100%; height: 100%; cursor: grab; }
+    aside { overflow: auto; padding: 18px; border-left: 1px solid #242b3b; background: #0d111b; }
+    aside h2 { margin: 0 0 8px; font-size: 18px; }
+    aside p { color: #b5bfd2; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+    .pill { display: inline-block; margin: 2px 4px 2px 0; padding: 4px 7px; border-radius: 999px; background: #253052; color: #cbd5ff; font-size: 11px; }
+    .hint { color: #6f7b93; }
+    .controls { margin: 16px 0; padding: 12px; border: 1px solid #293249; border-radius: 9px; background: #121827; }
+    .controls label { display: block; margin-bottom: 8px; color: #cbd5e8; font-size: 12px; }
+    .controls input[type="number"] { width: 100%; margin-top: 5px; padding: 7px; color: white; background: #151b29; border: 1px solid #303a50; border-radius: 6px; }
+    .controls input[type="text"] { width: 100%; margin-top: 5px; padding: 7px; color: white; background: #151b29; border: 1px solid #303a50; border-radius: 6px; }
+    .type-options { max-height: 145px; overflow: auto; margin: 8px 0; }
+    .type-options label { display: flex; align-items: center; gap: 7px; margin: 5px 0; }
+    .type-options input { width: auto; margin: 0; }
+    .controls button { width: 100%; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DotVectorDB Live Graph</h1>
+    <span id="stats">Loading…</span>
+    <input id="search" placeholder="Find an entity">
+    <button id="refresh">Refresh</button>
+  </header>
+  <main>
+    <canvas id="graph"></canvas>
+    <aside id="details"><p class="hint">Click a node to inspect it. Double-click a node to load its one-hop neighborhood.</p></aside>
+  </main>
+  <script>
+    const canvas = document.querySelector('#graph'), ctx = canvas.getContext('2d');
+    const details = document.querySelector('#details'), stats = document.querySelector('#stats');
+    let nodes = [], edges = [], byId = new Map(), scale = 1, ox = 0, oy = 0, drag = null, selected = null, hovered = null, lastVersion = null, loading = false, cacheKey = null, focusPositions = new Map(), subgraphNodeIds = null, subgraphEdgeIds = null, hopRadius = 1, typeFilters = new Set(), pathSource = null, pathResult = null;
+    const colors = ['#6ea8fe','#9b8cff','#4dd4ac','#f9c74f','#ff7b89','#71d6ff','#cf8cff'];
+    function resize(){ const r=canvas.getBoundingClientRect(), d=devicePixelRatio; canvas.width=r.width*d; canvas.height=r.height*d; ctx.setTransform(d,0,0,d,0,0); draw(); }
+    function hash(s){ let h=0; for(const c of s) h=(h*31+c.charCodeAt(0))|0; return Math.abs(h); }
+    function color(n){ return colors[hash((n.types||['other'])[0])%colors.length]; }
+    function fitGraph(){if(!nodes.length)return;const xs=nodes.map(n=>n.x),ys=nodes.map(n=>n.y),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),w=Math.max(maxX-minX,1),h=Math.max(maxY-minY,1);scale=Math.max(.05,Math.min(1,Math.min((canvas.clientWidth-100)/w,(canvas.clientHeight-100)/h)));ox=-(minX+maxX)/2*scale;oy=-(minY+maxY)/2*scale;draw();}
+    function mergeGraph(data, anchor=null, reset=false){
+      const old=reset?new Map():new Map(nodes.map(n=>[n.id,n])), incoming=new Map(data.nodes.map(n=>[n.id,n]));
+      if(reset){nodes=[];edges=[];}
+      for(const [id,n] of incoming){if(old.has(id))Object.assign(old.get(id),n);else{const i=nodes.length,a=i*2.399963,r=anchor?90+28*(i%4):24*Math.sqrt(i+1);nodes.push({...n,x:n.x??((anchor?.x||0)+Math.cos(a)*r),y:n.y??((anchor?.y||0)+Math.sin(a)*r),vx:0,vy:0});}}
+      const edgeIds=new Set(edges.map(e=>e.id));for(const e of data.edges)if(!edgeIds.has(e.id)){edges.push(e);edgeIds.add(e.id);}
+      byId=new Map(nodes.map(n=>[n.id,n]));simulate();draw();
+    }
+    function cacheDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open('dotvectordb-graph-cache',1);r.onupgradeneeded=()=>r.result.createObjectStore('graphs');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
+    async function readCache(key){const db=await cacheDb();return new Promise((resolve,reject)=>{const r=db.transaction('graphs').objectStore('graphs').get(key);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
+    async function writeCache(key,value){const db=await cacheDb();return new Promise((resolve,reject)=>{const r=db.transaction('graphs','readwrite').objectStore('graphs').put(value,key);r.onsuccess=()=>resolve();r.onerror=()=>reject(r.error);});}
+    async function load(status,force=false){
+      if(loading)return;loading=true;const key=`layout-v2:${status.database}:${status.version}`;cacheKey=key;
+      try{
+        if(!force){const cached=await readCache(key);if(cached&&cached.nodes.length===status.entities&&cached.edges.length===status.relationships){mergeGraph(cached,null,true);fitGraph();lastVersion=status.version;stats.textContent=`${status.entities} entities · ${status.relationships} relationships · cached`;return;}}
+        nodes=[];edges=[];byId=new Map();draw();let nodeOffset=0,edgeOffset=0,moreNodes=true,moreEdges=true;
+        while(moreNodes||moreEdges){
+          const data=await fetch(`/api/graph?limit=500&node_offset=${nodeOffset}&edge_offset=${edgeOffset}`,{cache:'no-store'}).then(r=>r.json());
+          mergeGraph(data,null,false);nodeOffset=data.next_node_offset;edgeOffset=data.next_edge_offset;moreNodes=data.has_more_nodes;moreEdges=data.has_more_edges;
+          stats.textContent=`Loading ${nodes.length}/${status.entities} entities · ${edges.length}/${status.relationships} relationships`;
+          await new Promise(resolve=>requestAnimationFrame(resolve));
+        }
+        fitGraph();await writeCache(key,{nodes,edges});lastVersion=status.version;stats.textContent=`${status.entities} entities · ${status.relationships} relationships · fully loaded`;
+      }finally{loading=false;}
+    }
+    async function expand(n){
+      const data=await fetch(`/api/neighbors/${encodeURIComponent(n.id)}?limit=100`,{cache:'no-store'}).then(r=>r.json());
+      mergeGraph(data,n,false);inspectNode(n);
+    }
+    async function checkStatus(){
+      const s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());
+      if(lastVersion===null||s.version!==lastVersion)await load(s);else if(!loading)stats.textContent=`${s.entities} entities · ${s.relationships} relationships · ${nodes.length} loaded`;
+    }
+    function simulate(){
+      for(let step=0;step<8;step++){
+        for(const e of edges){ const a=byId.get(e.source),b=byId.get(e.target); if(!a||!b)continue; const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1,f=(d-140)*.00012;a.vx+=dx/d*f;a.vy+=dy/d*f;b.vx-=dx/d*f;b.vy-=dy/d*f; }
+        for(const n of nodes){ n.x+=n.vx;n.y+=n.vy;n.vx*=.72;n.vy*=.72; }
+      }
+    }
+    function screen(n){ return [canvas.clientWidth/2+ox+n.x*scale,canvas.clientHeight/2+oy+n.y*scale]; }
+    function draw(){
+      ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
+      const selectedId=pathSource?null:selected?.id, neighborIds=new Set(),pathEdgeRanks=new Map(),pathNodeIds=new Set();
+      for(const path of pathResult?.paths||[]){for(const id of path.nodes)pathNodeIds.add(id);for(const id of path.edges){if(!pathEdgeRanks.has(id))pathEdgeRanks.set(id,[]);pathEdgeRanks.get(id).push(path.rank);}}
+      for(const e of edges){if(subgraphEdgeIds&&!subgraphEdgeIds.has(e.id))continue;const active=selectedId&&(e.source===selectedId||e.target===selectedId);if(active){neighborIds.add(e.source);neighborIds.add(e.target);continue;}const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=1;ctx.strokeStyle='#30384a';ctx.stroke();}
+      if(selectedId)for(const e of edges){if(subgraphEdgeIds&&!subgraphEdgeIds.has(e.id))continue;if(e.source!==selectedId&&e.target!==selectedId)continue;const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=2.5;ctx.strokeStyle='#ff405c';ctx.stroke();}
+      for(const e of edges){const ranks=pathEdgeRanks.get(e.id);if(!ranks)continue;const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b),mx=(ax+bx)/2,my=(ay+by)/2,label=ranks.join(',');ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=4;ctx.strokeStyle='#35d07f';ctx.stroke();ctx.beginPath();ctx.arc(mx,my,10,0,Math.PI*2);ctx.fillStyle='#0d7a48';ctx.fill();ctx.fillStyle='white';ctx.font='bold 10px system-ui';ctx.textAlign='center';ctx.fillText(label,mx,my+3);ctx.textAlign='start';}
+      const q=document.querySelector('#search').value.toLowerCase();
+      for(const n of nodes){if(subgraphNodeIds&&!subgraphNodeIds.has(n.id))continue;const [x,y]=screen(n), hit=q&&n.name.toLowerCase().includes(q),r=Math.max(4,Math.min(14,4+Math.sqrt(n.degree||0))),onPath=pathNodeIds.has(n.id)||n===pathSource;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=onPath?'#35d07f':hit?'#fff':color(n);ctx.fill();if(!pathSource&&(n===selected||neighborIds.has(n.id))){ctx.lineWidth=n===selected?3:2;ctx.strokeStyle='#ff405c';ctx.stroke();}if(scale>1.6||hit||n===selected||n===hovered||neighborIds.has(n.id)||onPath){ctx.fillStyle='#dfe7fa';ctx.font='11px system-ui';ctx.fillText(n.name,x+r+4,y+4);} }
+    }
+    function restoreFocus(){for(const [id,p] of focusPositions){const n=byId.get(id);if(n){n.x=p.x;n.y=p.y;}}focusPositions.clear();}
+    function focusNeighborhood(n,connected){restoreFocus();const neighbors=[];for(const e of connected){const other=byId.get(e.source===n.id?e.target:e.source);if(other&&!neighbors.includes(other))neighbors.push(other);}neighbors.forEach((other,i)=>{focusPositions.set(other.id,{x:other.x,y:other.y});const ring=Math.floor(i/12),slot=i%12,count=Math.min(12,neighbors.length-ring*12),angle=slot*Math.PI*2/count,radius=110+ring*75;other.x=n.x+Math.cos(angle)*radius;other.y=n.y+Math.sin(angle)*radius;other.vx=0;other.vy=0;});}
+    function arrangeSubgraph(n,data){restoreFocus();const adjacency=new Map(data.nodes.map(x=>[x.id,[]]));for(const e of data.edges){adjacency.get(e.source)?.push(e.target);adjacency.get(e.target)?.push(e.source);}const distance=new Map([[n.id,0]]),queue=[n.id];for(let i=0;i<queue.length;i++){const id=queue[i],d=distance.get(id);for(const next of adjacency.get(id)||[])if(!distance.has(next)){distance.set(next,d+1);queue.push(next);}}const rings=new Map();for(const node of data.nodes){if(node.id===n.id)continue;const d=distance.get(node.id)??hopRadius;if(!rings.has(d))rings.set(d,[]);rings.get(d).push(byId.get(node.id));}for(const [ring,members] of rings)members.forEach((other,i)=>{if(!other)return;focusPositions.set(other.id,{x:other.x,y:other.y});const angle=i*Math.PI*2/members.length,radius=115*ring;other.x=n.x+Math.cos(angle)*radius;other.y=n.y+Math.sin(angle)*radius;other.vx=0;other.vy=0;});}
+    function typeControls(types){return `<div class="controls"><label>Hop radius<input id="hop-radius" type="number" min="1" step="1" value="${hopRadius}"></label><div class="type-options">${types.map(t=>`<label><input type="checkbox" data-type="${encodeURIComponent(t)}" ${typeFilters.has(t)?'checked':''}>${escapeHtml(t)}</label>`).join('')||'<p class="hint">No routing types in range.</p>'}</div><button id="apply-subgraph">Apply subgraph</button><p class="hint">Only routing types found within this radius are listed. With none selected, all of them are shown.</p></div>`;}
+    async function inspectNode(n){if(pathSource){if(n.id!==pathSource.id)await findPaths(n.id,null);return;}selected=n;await loadSubgraph(n);}
+    async function loadSubgraph(n){const params=new URLSearchParams({hops:String(hopRadius)});for(const type of typeFilters)params.append('type',type);const data=await fetch(`/api/subgraph/${encodeURIComponent(n.id)}?${params}`,{cache:'no-store'}).then(r=>r.json());mergeGraph(data,n,false);subgraphNodeIds=new Set(data.nodes.map(x=>x.id));subgraphEdgeIds=new Set(data.edges.map(x=>x.id));arrangeSubgraph(n,data);const connected=data.edges.filter(e=>e.source===n.id||e.target===n.id);const connections=connected.map(e=>{const other=byId.get(e.source===n.id?e.target:e.source);return `<p><strong>${escapeHtml(other?.name||'Unknown')}</strong><br>${escapeHtml(e.description||'No relationship description')}</p>`;}).join('');details.innerHTML=`<h2>${escapeHtml(n.name)}</h2><div>${(n.types||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('')}</div><p>Degree: ${n.degree} · ${data.nodes.length} nodes in subgraph · ${data.edges.length} relationships</p><button id="choose-paths">Find k shortest paths</button>${typeControls(data.available_types||[])}<p>${escapeHtml(n.description||'No description')}</p><h2>Immediate connections</h2>${connections||'<p class="hint">No matching relationships.</p>'}`;document.querySelector('#choose-paths').onclick=()=>startPathMode(n);document.querySelector('#apply-subgraph').onclick=()=>{hopRadius=Math.max(1,Math.floor(Number(document.querySelector('#hop-radius').value)||1));typeFilters=new Set([...document.querySelectorAll('.type-options input:checked')].map(input=>decodeURIComponent(input.dataset.type)));loadSubgraph(n);};draw();}
+    function startPathMode(n){restoreFocus();pathSource=n;pathResult=null;selected=n;subgraphNodeIds=null;subgraphEdgeIds=null;details.innerHTML=`<h2>Shortest paths</h2><p><strong>Source:</strong> ${escapeHtml(n.name)}</p><div class="controls"><label>Destination name<input id="path-destination" type="text" placeholder="Enter exact entity name"></label><label>Number of paths (k)<input id="path-k" type="number" min="1" step="1" value="3"></label><button id="run-paths">Find paths</button></div><p class="hint">Click another node or enter its name as the destination.</p>`;document.querySelector('#run-paths').onclick=()=>findPaths(null,document.querySelector('#path-destination').value);draw();}
+    function ordinal(n){const m=n%100;return n+(m>=11&&m<=13?'th':n%10===1?'st':n%10===2?'nd':n%10===3?'rd':'th');}
+    async function findPaths(targetId,targetName){const k=Math.max(1,Math.floor(Number(document.querySelector('#path-k')?.value)||3)),params=new URLSearchParams({k:String(k)});if(targetId)params.set('target_id',targetId);else params.set('target_name',targetName||'');const response=await fetch(`/api/shortest-paths/${encodeURIComponent(pathSource.id)}?${params}`,{cache:'no-store'});if(!response.ok){details.insertAdjacentHTML('beforeend',`<p>${escapeHtml(await response.text())}</p>`);return;}pathResult=await response.json();mergeGraph(pathResult,pathSource,false);const lists=pathResult.paths.map(path=>`<p><strong>${ordinal(path.rank)} shortest:</strong> ${path.nodes.map(id=>escapeHtml(byId.get(id)?.name||id)).join(' → ')}</p>`).join('');details.innerHTML=`<h2>Shortest paths</h2><p><strong>Source:</strong> ${escapeHtml(byId.get(pathResult.source)?.name||pathResult.source)}<br><strong>Destination:</strong> ${escapeHtml(byId.get(pathResult.target)?.name||pathResult.target)}</p>${lists||'<p class="hint">No path connects these entities.</p>'}<button id="new-path">Choose another destination</button>`;document.querySelector('#new-path').onclick=()=>startPathMode(pathSource);draw();}
+    function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    function pointer(e){const r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}
+    function nodeAt(e,maxDistance=18){const [px,py]=pointer(e);let best=null,bd=maxDistance;for(const n of nodes){if(subgraphNodeIds&&!subgraphNodeIds.has(n.id))continue;const [x,y]=screen(n),d=Math.hypot(px-x,py-y);if(d<bd){best=n;bd=d;}}return best;}
+    canvas.onmousedown=e=>{const n=nodeAt(e);drag={x:e.clientX,y:e.clientY,ox,oy,node:n,moved:false};canvas.style.cursor=n?'move':'grabbing';};
+    canvas.ondblclick=e=>{const n=nodeAt(e,22);if(n)expand(n);};
+    onmouseup=async()=>{if(!drag)return;if(!drag.moved&&drag.node)inspectNode(drag.node);else if(!drag.moved&&!drag.node){restoreFocus();selected=null;subgraphNodeIds=null;subgraphEdgeIds=null;typeFilters.clear();hopRadius=1;pathSource=null;pathResult=null;details.innerHTML='<p class="hint">Click a node to inspect its configurable subgraph.</p>';draw();}if(drag.node&&drag.moved&&cacheKey&&focusPositions.size===0)await writeCache(cacheKey,{nodes,edges});drag=null;canvas.style.cursor='grab';};
+    onmousemove=e=>{if(!drag){hovered=nodeAt(e);canvas.style.cursor=hovered?'pointer':'grab';draw();return;}const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>3)drag.moved=true;if(drag.node){const [px,py]=pointer(e);drag.node.x=(px-canvas.clientWidth/2-ox)/scale;drag.node.y=(py-canvas.clientHeight/2-oy)/scale;drag.node.vx=0;drag.node.vy=0;}else{ox=drag.ox+dx;oy=drag.oy+dy;}draw();};
+    canvas.onwheel=e=>{e.preventDefault();scale=Math.max(.05,Math.min(4,scale*Math.exp(-e.deltaY*.001)));draw();};
+    document.querySelector('#search').oninput=draw; document.querySelector('#refresh').onclick=async()=>load(await fetch('/api/status',{cache:'no-store'}).then(r=>r.json()),true); addEventListener('resize',resize);
+    resize(); checkStatus(); setInterval(checkStatus,3000);
+  </script>
+</body>
+</html>

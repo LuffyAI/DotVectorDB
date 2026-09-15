@@ -41,9 +41,11 @@ class GlobalDescriptionGenerator:
         async with self.lock:
             cursor = await self.conn.execute(
                 """
-                SELECT *
+                SELECT entity.*
                 FROM entity
-                WHERE entity_type = ?
+                JOIN entity_to_entity_type_mapping
+                ON entity_to_entity_type_mapping.entity_id = entity.entity_id
+                WHERE entity_to_entity_type_mapping.entity_type = ?
                 ORDER BY RANDOM()
                 LIMIT ?
                 """,

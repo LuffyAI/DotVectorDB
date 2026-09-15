@@ -9,10 +9,16 @@ from dotvectordb.plugins.hash_functions.hashfuncs import SHA256HashingFunc
 from dotvectordb.plugins.loaders.TextConverter import DocumentTextExtractor
 from dotvectordb.prompts.entity_prompts import DEFAULT_ENTITY_TYPES, isEntityTypesFormatCorrect
 from dotvectordb.graph.entity_indexer import EntityIndexer
+from dotvectordb.graph.entity_indexer2 import EntityIndexer2
+from dotvectordb.graph.entity_indexer3 import EntityIndexer3
+from dotvectordb.graph.dedupe_indexer import DedupeIndexer
 from dotvectordb.graph.relatonship_indexer import RelationshipIndexer
+from dotvectordb.graph.relationship_indexer2 import RelationshipIndexer2
+from dotvectordb.graph.type_indexer import TypeIndexer
 from dotvectordb.graph.graph_retriever import GraphRetriever
 from dotvectordb.graph.generate_global_desc import GlobalDescriptionGenerator
 from dotvectordb.graph.TempVectorSpace import AsyncTempVectorSpace
+from dotvectordb.web_interface import open_graph_interface
 import os
 from pathlib import Path
 from tqdm.asyncio import tqdm_asyncio
@@ -163,6 +169,20 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the initialize_default_schema function inside DotVectorDB: {e}")
+    async def add_entity_tag(self,  tag):
+        self.__require_open_connection()
+        try:
+            await self.conn.execute(
+                """
+                INSERT OR IGNORE INTO entity_tags(entity_tag)
+                VALUES (?)
+                """,
+                (tag,),
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the add_entity_tags function inside DotVectorDB: {e}")
+
     async def add_entity_types(self, entity_types=None)-> None:
         self.__require_open_connection()
         try:
@@ -686,6 +706,24 @@ class DotVectorDB:
     ############################################################
     #   Function For Extracting and Embedding Entities        # 
     ############################################################
+    async def extract_entity_tags(self, async_cooldown=60, requests_per_minute=1000) -> None:
+        try:
+            REL_indexer =RelationshipIndexer2(
+                conn=self.conn,
+                lock=self.lock,
+                language_model=self.language_model.generate,
+                hash_func=self.hashing_func.content_hash,
+            )
+            await REL_indexer.extract_relations_from_chunks(
+                async_cooldown=async_cooldown,
+                requests_per_minute=requests_per_minute,
+                verbose=self.verbose,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the extract_entity_tags function inside DotVectorDB while initializing TypeIndexer: {e}")
+
+
     async def extract_and_embed_entities(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
         self.__require_open_connection()
         # First, we add in any passed in entities. If the database is new and no entity types are passed in, we use the default entity types.
@@ -722,6 +760,73 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the extract_and_embed_entities function inside DotVectorDB: {e}")
+
+    async def extract_and_embed_entities2(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
+        self.__require_open_connection()
+        # First, we add in any passed in routing types. If the database is new and no routing types are passed in, we use the default routing types.
+        try:
+            await self.add_entity_types(entity_types)
+            entity_types = await self.get_entity_types()
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the extract_and_embed_entities2 function inside DotVectorDB while adding routing types: {e}")
+        # Second, we describe and classify the temporary entities from the extracted relationships.
+        try:
+            entity_indexer = EntityIndexer2(
+                conn=self.conn,
+                lock=self.lock,
+                language_model=self.language_model.generate,
+                embedding_model=self.embedding_model,
+                hash_func=self.hashing_func.content_hash,
+                entity_types=entity_types,
+                add_embedding_func=self.add_embedding
+            )
+            await entity_indexer.extract_entities_from_ingested_chunks(
+                async_cooldown=async_cooldown,
+                requests_per_minute=requests_per_minute,
+                verbose=self.verbose
+            )
+            await entity_indexer.embed_entities(
+                async_cooldown=async_cooldown,
+                requests_per_minute=requests_per_minute,
+                verbose=self.verbose
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the extract_and_embed_entities2 function inside DotVectorDB: {e}")
+
+    async def extract_and_embed_entities3(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
+        self.__require_open_connection()
+        try:
+            await self.add_entity_types(entity_types)
+            entity_types = await self.get_entity_types()
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the extract_and_embed_entities3 function inside DotVectorDB while adding entity types: {e}")
+
+        try:
+            entity_indexer = EntityIndexer3(
+                conn=self.conn,
+                lock=self.lock,
+                language_model=self.language_model.generate,
+                embedding_model=self.embedding_model,
+                hash_func=self.hashing_func.content_hash,
+                entity_groups=entity_types,
+                add_embedding_func=self.add_embedding
+            )
+            await entity_indexer.extract_entities_from_ingested_chunks(
+                async_cooldown=async_cooldown,
+                requests_per_minute=requests_per_minute,
+                verbose=self.verbose
+            )
+            await entity_indexer.embed_entities(
+                async_cooldown=async_cooldown,
+                requests_per_minute=requests_per_minute,
+                verbose=self.verbose
+            )
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(f"Error in the extract_and_embed_entities3 function inside DotVectorDB: {e}")
     ############################################################
     #   Function For Extracting and Embedding Relations        # 
     ############################################################
@@ -822,6 +927,46 @@ class DotVectorDB:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating the graph representation: {e}") 
         print("Graph construction completed successfully.")
+    async def construct_GraphRAG2(self, input_document_list=None, entity_types=None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
+            # First, we ingest the documents into the database, which includes extracting text, chunking it, and adding embeddings.
+            try:
+                self.__graph_construction_print("STEP ONE: Chunking & Embedding a Given Corpus")
+                await self.ingest_documents(input_document_list=input_document_list,
+                                            async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while ingesting text chunks: {e}")
+            # Second, we extract, classify, and embed entities from the chunks.
+            try:
+               self.__graph_construction_print("STEP TWO: Extracting, Classifying, and Embedding Entities")
+               await self.extract_and_embed_entities3(entity_types=entity_types, async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while adding in the entities: {e}")
+
+             # Third, we extract relationships from the entities and add them to the database.
+            try:
+                self.__graph_construction_print("STEP THREE: Extracting Relationships from the Ingested/Unprocessed Chunks")
+                await self.extract_and_embed_relationships(async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while adding in the relationships: {e}")
+
+
+            # Fourth, generate and save a global description for each source document.
+            try:
+                self.__graph_construction_print("STEP FOUR: Generating a Global Description for the entity-relationship graph")
+                await self.generate_global_descriptions(debug_mode=debug_mode)
+            except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
+            # Lastly, we need to generate the graph representation of the database.
+            try:
+                self.__graph_construction_print("STEP FIVE: Creating the Graph Representation of the Database")
+                await self.graph_retriever.load_graph()
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while clustering entities: {e}")
     ############################################################
     #   Functions For DotVDB's Vector Ingestion + Search       # 
     ############################################################
@@ -1002,3 +1147,5 @@ class DotVectorDB:
                 )
             )
             return gathered_results
+    async def view_live_graph(self):
+        await open_graph_interface(self)
