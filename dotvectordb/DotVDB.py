@@ -81,6 +81,19 @@ class DotVectorDB:
             return None
         column_names = [description[0] for description in cursor.description]
         return dict(zip(column_names, row))
+    def __require_bm25_index(self, table_name: str) -> None:
+        """Helper function to ensure that a BM25 index exists for the specified table."""
+        self.__require_open_connection()
+        index_name = f"{table_name}_fts"
+        async def check_index():
+            async with self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (index_name,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                if result is None:
+                    raise RuntimeError(f"BM25 index '{index_name}' does not exist for table '{table_name}'. Please create it first.")
+        asyncio.run(check_index())
     def __read_schema_file(self, filename: str) -> str:
         """Helper function to read a schema file and return its contents as a string."""
         file = (BASE_DIR / "schema" / filename).read_text(encoding="utf-8")
@@ -962,13 +975,22 @@ class DotVectorDB:
             except Exception as e:
                         traceback.print_exc()
                         raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
-            # Lastly, we need to generate the graph representation of the database.
+            # Fifth, we need to generate the graph representation of the database.
             try:
                 self.__graph_construction_print("STEP FIVE: Creating the Graph Representation of the Database")
                 await self.graph_retriever.load_graph()
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while clustering entities: {e}")
+            # Lastly, we construct the BM25 index
+            try:
+               self.__graph_construction_print("STEP SIX: Creating the BM25 Index")
+               await self.create_BM25_index_for_table("chunk")
+               await self.create_BM25_index_for_table("entity")
+               await self.create_BM25_index_for_table("relationship")  
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
     ############################################################
     #   Functions For DotVDB's Vector Ingestion + Search       # 
     ############################################################
@@ -1150,5 +1172,109 @@ class DotVectorDB:
                 )
             )
             return gathered_results, Manager
+    ############################################################
+    #   Functions For DotVDB's BM25 Indexing + Search          # 
+    ############################################################
+    async def create_BM25_index_for_table(self, table_name: str):
+            """Creates a BM25 index for the specified table ('chunk', 'entity', or 'relationship') using SQLite's FTS5 extension."""
+            try:
+                self.__require_open_connection()
+                table_config = {
+                    "chunk": {
+                        "id_column": "chunk_id",
+                        "columns": ["content"],
+                    },
+                    "entity": {
+                        "id_column": "entity_id",
+                        "columns": [
+                            "entity_name",
+                            "entity_description",
+                            "questions",
+                        ],
+                    },
+                    "relationship": {
+                        "id_column": "relation_id",
+                        "columns": [
+                            "relation_description",
+                            "questions",
+                        ],
+                    },
+                }
+                if table_name not in table_config:
+                    raise ValueError(
+                        "table_name must be 'chunk', 'entity', or 'relationship'"
+                    )
+                config = table_config[table_name]
+                index_name = f"{table_name}_fts"
+                columns = ", ".join(config["columns"])
+                id_column = config["id_column"]
+                async with self.lock:
+                    await self.conn.execute(
+                        f"""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS {index_name}
+                        USING fts5(
+                            {columns},
+                            content='{table_name}',
+                            content_rowid='{id_column}'
+                        )
+                        """
+                    )
+                    # Populate the index using records already in the table.
+                    await self.conn.execute(
+                        f"""
+                        INSERT INTO {index_name}({index_name})
+                        VALUES ('rebuild')
+                        """
+                    )
+                    await self.conn.commit()
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(
+                    "Error in the create_BM25_index_for_table "
+                    f"function inside DotVectorDB: {e}"
+                )
+    async def search_BM25(self, table_name: str, query: str, top_k: int = 10) -> tuple[list[dict], int]:
+        """Searches and ranks rows from a table's BM25 index."""
+        try:
+            self.__require_open_connection()
+            if table_name not in {"chunk", "entity", "relationship"}:
+                raise ValueError(
+                    "table_name must be 'chunk', 'entity', or 'relationship'"
+                )
+            search_terms = query.split()
+            if not search_terms:
+                return [], 0
+            fts_query = " OR ".join(
+                f'"{term.replace(chr(34), chr(34) * 2)}"'
+                for term in search_terms
+            )
+            index_name = f"{table_name}_fts"
+            async with self.lock:
+                cursor = await self.conn.execute(
+                    f"""
+                    SELECT
+                        fts.rowid AS bm25_rowid,
+                        records.*,
+                        bm25({index_name}) AS bm25_score
+                    FROM {index_name} AS fts
+                    JOIN {table_name} AS records
+                        ON records.rowid = fts.rowid
+                    WHERE {index_name} MATCH ?
+                    ORDER BY bm25_score ASC
+                    LIMIT ?
+                    """,
+                    (fts_query, top_k)
+                )
+                rows = await cursor.fetchall()
+                column_names = [description[0] for description in cursor.description]
+                return [dict(zip(column_names, row)) for row in rows], 0
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(
+                f"Error in the search_BM25 function inside DotVectorDB: {e}"
+            )
+    ############################################################
+    #   Functions For Visualuzing DotVDB's Graphs          # 
+    ############################################################
     async def view_live_graph(self):
         await open_graph_interface(self)
