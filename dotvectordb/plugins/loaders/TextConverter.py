@@ -4,6 +4,7 @@ import pdfplumber
 from docx import Document
 from openpyxl import load_workbook
 from pptx import Presentation
+import json
 
 
 class DocumentTextExtractor:
@@ -18,6 +19,7 @@ class DocumentTextExtractor:
         ".xlsx",
         ".xlsm",
         ".pptx",
+        ".json",  
     }
 
     def __init__(self, directories: List[str]):
@@ -106,6 +108,11 @@ class DocumentTextExtractor:
 
         if extension == ".pptx":
             return self.extract_slide(file_path)
+
+        if extension == ".json":
+            print(f"JSON file detected: {file_path}. Skipping extraction. Ensure you have a custom ChunkingFunc implementation.")
+            with file_path.open("r", encoding="utf-8") as file:
+                return json.load(file)
 
         raise ValueError(f"Unsupported file type: {extension}")
 

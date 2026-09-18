@@ -1274,7 +1274,78 @@ class DotVectorDB:
                 f"Error in the search_BM25 function inside DotVectorDB: {e}"
             )
     ############################################################
-    #   Functions For Visualuzing DotVDB's Graphs          # 
+    #   Hybrid Vector and BM25 Search                          # 
+    ############################################################
+    async def hybrid_vector_BM25_search(self, query, table, top_k=40, embedding_table=None, KNN=True, distance_metric="l2") -> tuple[list[dict], int]:
+            self.__require_open_connection()
+            try:
+                candidate_k = top_k * 2
+                rrf_k = 60
+
+                (vector_results, query_tokens), (bm25_results, _) = await asyncio.gather(
+                    self.vector_search(
+                        query=query,
+                        table=table,
+                        top_k=candidate_k,
+                        embedding_table=embedding_table,
+                        KNN=KNN,
+                        distance_metric=distance_metric,
+                    ),
+                    self.search_BM25(
+                        table_name=table,
+                        query=query,
+                        top_k=candidate_k,
+                    ),
+                )
+
+                fused_results = {}
+
+                for rank, result in enumerate(vector_results, start=1):
+                    rowid = result["vector_rowid"]
+                    fused_results[rowid] = {
+                        "result": dict(result),
+                        "rrf_score": 1.0 / (rrf_k + rank),
+                    }
+
+                for rank, result in enumerate(bm25_results, start=1):
+                    rowid = result["bm25_rowid"]
+                    rrf_score = 1.0 / (rrf_k + rank)
+
+                    if rowid in fused_results:
+                        fused_results[rowid]["rrf_score"] += rrf_score
+                        fused_results[rowid]["result"]["bm25_rowid"] = rowid
+                        fused_results[rowid]["result"]["bm25_score"] = result["bm25_score"]
+                    else:
+                        fused_results[rowid] = {
+                            "result": dict(result),
+                            "rrf_score": rrf_score,
+                        }
+                        fused_results[rowid]["result"]["vector_rowid"] = rowid
+                        fused_results[rowid]["result"]["similarity_score"] = None
+
+                ranked_results = sorted(
+                    fused_results.values(),
+                    key=lambda result: result["rrf_score"],
+                    reverse=True,
+                )[:top_k]
+
+                results = []
+                for ranked_result in ranked_results:
+                    result = ranked_result["result"]
+                    result.setdefault("bm25_rowid", result["vector_rowid"])
+                    result.setdefault("bm25_score", None)
+                    result["rrf_score"] = ranked_result["rrf_score"]
+                    results.append(result)
+
+                return results, query_tokens
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(
+                    "Error in the hybrid_vector_BM25_search function "
+                    f"inside DotVectorDB: {e}"
+                )
+    ############################################################
+    #   Functions For Visualuzing DotVDB's Graphs              # 
     ############################################################
     async def view_live_graph(self):
         await open_graph_interface(self)
