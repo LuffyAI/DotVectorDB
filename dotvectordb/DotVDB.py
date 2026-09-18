@@ -19,6 +19,7 @@ from dotvectordb.graph.graph_retriever import GraphRetriever
 from dotvectordb.graph.generate_global_desc import GlobalDescriptionGenerator
 from dotvectordb.graph.TempVectorSpace import AsyncTempVectorSpace
 from dotvectordb.web_interface import open_graph_interface
+from dotvectordb.data_structures.path import PathManager
 import os
 from pathlib import Path
 from tqdm.asyncio import tqdm_asyncio
@@ -136,7 +137,8 @@ class DotVectorDB:
         self.graph_path = f"""{replace_db_extension_with_underscore}_graph.pkl"""
         self.graph_retriever = GraphRetriever(graph_path=f"""{self.graph_path}""", 
                                               conn=self.conn, lock=self.lock, 
-                                              get_num_nodes_edges_func=self.get_num_of_entities_and_relationships)
+                                              get_num_nodes_edges_func=self.get_num_of_entities_and_relationships,
+                                              vector_search=self.vector_search)
         self.DIM = await self.get_embedding_dim()
         if self.verbose:
             print("DotVectorDB initialized successfully.")
@@ -1129,7 +1131,7 @@ class DotVectorDB:
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the construct_temp_graph function inside DotVectorDB: {e}")
-    async def subgraph_constrained_semantic_retrieval(self, query, custom_search_algo, DOTs, **kwargs):
+    async def subgraph_constrained_semantic_retrieval(self, query, custom_search_algo, DOTs, MAX_TOKENS, top_k=40, **kwargs):
             """
             In this code, you would open TempVectorSpace() and close tempvector space by the end of the function.
             It essentially creates a temporary vector space that is opened annd closed by the end of this function.
@@ -1137,15 +1139,16 @@ class DotVectorDB:
             """
             self.__require_open_connection()
             gathered_results = None
+            Manager = PathManager(tokenizer=self.tokenizer, max_tokens=MAX_TOKENS, top_k=top_k) 
             async with AsyncTempVectorSpace(query=query, conn=self.conn,DOTs=DOTs, conn_check_func=self.__require_open_connection, lock=self.lock) as QueryWS:
                 # The custom_search_algo should be some DOT-based retrieval algorithm
                 # The search is performed concurrently for each DOT
                 gathered_results = await asyncio.gather(
                 *(
-                    custom_search_algo(QueryWS, DOT, **kwargs)
+                    custom_search_algo(QueryWS, DOT, Manager, **kwargs)
                     for DOT in DOTs
                 )
             )
-            return gathered_results
+            return gathered_results, Manager
     async def view_live_graph(self):
         await open_graph_interface(self)

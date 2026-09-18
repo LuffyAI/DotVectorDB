@@ -25,31 +25,16 @@ class TrieNode:
 
 class PathTrie:
     """
-    Trie that keeps only maximal paths.
-    In DotVectorDB, there's no point to keep [1,2] if [1,2,3] is already stored.
-    It does not carry any new innformation, so it is discarded.
-    Rules:
-        Case 1: Subset of an already stored path is rejected.
-        existing: (1, 2, 3)
-        add:      (1, 2)
-        -> rejected because candidate is shorter
-
-        Case 2: Superset of an already stored path replaces it.
-        existing: (1, 2)
-        add:      (1, 2, 3)
-        -> existing shorter path is replaced
-
-        Case 3: Neither is a prefix of the other, both are kept.
-        existing: (1, 2, 3)
-        add:      (1, 4)
-        -> both remain because neither is a prefix of the other
+    Trie that stores distinct paths without treating prefixes as duplicates.
+    A path is rejected only when the same relationship sequence, or the full
+    reverse of that sequence, is already stored.
     """
     def __init__(self):
         """The root node is a dummy node that does not represent any item in the path."""
         self.root = TrieNode()
 
     def add(self, path, value=None):
-        """This method adds a new path to the trie, ensuring that only maximal paths are kept
+        """Add a path unless the same path or its reverse is already stored.
         path: A list or tuple representing the path to be added. This is used to navigate the trie.
         value: If we navigate to a terminal node, this value will be stored with the path.
         Returns:
@@ -61,40 +46,18 @@ class PathTrie:
         if not path:
             return False, None
 
-        #####################################################
-        # Cases When We are at an intermediate node         #
-        #####################################################    
-        # We copy the dummy root node to start traversing the trie.
-        node = self.root
-        old_value = None
-        for item in path:
-            # Case 1: If we encounter a terminal node while traversing, it means the new path is a superset of an existing path.
-            # Solution: We replace the existing shorter path with the new longer path by marking the existing node as non-terminal and clearing its value.
-            if node.is_terminal:
-                node.is_terminal = False
-                old_value = node.value
-                node.value = None
+        if self.contains_exact(path) or self.contains_exact(reversed(path)):
+            return False, None
 
-            # Case 2: If we encounter a non-terminal node, we continue traversing.
+        node = self.root
+        for item in path:
             if item not in node.children:
                 node.children[item] = TrieNode()
             node = node.children[item]
 
-        #####################################################
-        # Cases When We Reach the End of the New Path       #
-        #####################################################    
-        # Case 3 (CANNOT ADD): If we reach the end of the new path and the node is already terminal, it means the exact path already exists in the trie.
-        if node.is_terminal:
-            return False, None
-
-        # Case 4 (CANNOT ADD): If we reach the end of the new path and the node has children, it means the new path is a subset of an existing path.
-        if node.children:
-            return False, None
-
-        # Case 5 (CAN ADD): If we reach the end of the new path and the node is not terminal and has no children, it means the new path is unique and can be added to the trie. We replace the existing shorter path with the new longer path by marking the node as terminal and storing the value.
         node.is_terminal = True
         node.value = path if value is None else value
-        return True, old_value
+        return True, None
 
     def contains_exact(self, path):
         node = self._find_node(path)
@@ -112,7 +75,11 @@ class PathTrie:
         return node
 
     def __contains__(self, path):
-        return self.contains_prefix(path)
+        path = tuple(path)
+        return (
+            self.contains_exact(path)
+            or self.contains_exact(reversed(path))
+        )
 
     def values(self):
         """Return values for all currently surviving terminal paths."""

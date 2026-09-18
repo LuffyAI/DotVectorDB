@@ -50,6 +50,69 @@ class AsyncTempVectorSpace:
                 )
             if self.conn:
                 print(f"Removed embeddings from temporary table {DOT.sql_table_name} for tid {DOT.centroid_id}")
-            
 
-            
+
+class TempVectorSpacePathWeights:
+    def __init__(
+        self,
+        conn,
+        lock,
+        relationship_ids,
+        conn_check_func,
+        query=None,
+        verbose=False,
+        **kwargs,
+    ):
+        self.conn = conn
+        self.lock = lock
+        self.relationship_ids = list(dict.fromkeys(relationship_ids))
+        self.conn_check_func = conn_check_func
+        self.query = query
+        self.verbose = verbose
+        self.wid = uuid.uuid4().hex[:8]
+        self.sql_table_name = f"temp_vector_path_weights_{self.wid}"
+        self.embedding_table = f"temp.{self.sql_table_name}"
+
+    async def __aenter__(self):
+        async with self.lock:
+            self.conn_check_func()
+            await self.conn.execute(
+                f"""
+                CREATE VIRTUAL TABLE IF NOT EXISTS {self.embedding_table}
+                USING vec1(embedding);
+                """
+            )
+            await self._copy_relationship_embeddings_to_temp()
+            await self.conn.commit()
+            if self.verbose:
+                print(
+                    f"Created temporary path-weight vector table "
+                    f"{self.sql_table_name} with "
+                    f"{len(self.relationship_ids)} relationship IDs"
+                )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        async with self.lock:
+            await self.conn.execute(
+                f"DROP TABLE IF EXISTS {self.embedding_table};"
+            )
+            await self.conn.commit()
+
+    async def _copy_relationship_embeddings_to_temp(
+        self,
+        from_table="relationship_embeddings",
+    ):
+        if not self.relationship_ids:
+            return
+
+        placeholders = ",".join("?" for _ in self.relationship_ids)
+        await self.conn.execute(
+            f"""
+            INSERT INTO {self.embedding_table} (rowid, embedding)
+            SELECT rowid, embedding
+            FROM {from_table}
+            WHERE rowid IN ({placeholders});
+            """,
+            self.relationship_ids,
+        )

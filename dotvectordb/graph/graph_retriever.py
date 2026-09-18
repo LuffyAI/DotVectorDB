@@ -1,6 +1,7 @@
 from aiosqlite import cursor
 from dotvectordb.data_structures.path import Node, Edge, Path
 from dotvectordb.data_structures.trie import PathTrie
+from dotvectordb.graph.TempVectorSpace import TempVectorSpacePathWeights
 import igraph as ig
 from collections import defaultdict, deque
 import traceback
@@ -8,12 +9,13 @@ import os
 import json
 
 class GraphRetriever():
-    def __init__(self, graph_path, conn, lock, get_num_nodes_edges_func):
+    def __init__(self, graph_path, conn, lock, get_num_nodes_edges_func, vector_search):
         self.conn = conn
         self.graph_path = graph_path
         self.graph = None
         self.lock = lock
         self.get_num_nodes_edges_func = get_num_nodes_edges_func
+        self.vector_search = vector_search
     ############################################################
     #   Loads Persistent Graph                                 # 
     ############################################################
@@ -381,6 +383,60 @@ class GraphRetriever():
             PathManager.build_and_add_path(graph, complete_path)
         return True
 
+#  async def weight_paths(self, starting_node_ids, accepted_node_types, intermediate_goal, terminal_goal, hop_limit=5):
+    async def get_weighted_shortest_paths(
+        self,
+        buffer_id,
+        graph,
+        source,
+        destination,
+        end_point,
+        PathManager,
+        k=10,
+    ):
+        """
+        Retrieve the k lowest-cost paths from the source node to a target edge
+        using the query graph's calculated edge costs.
+        """
+        if "cost" not in graph.es.attributes():
+            raise ValueError(
+                "The graph has no 'cost' edge weights. "
+                "Call weight_paths first."
+            )
+
+        source_index = await self.get_igraph_index(
+            entity_id=source,
+            graph=graph,
+        )
+        print(f"Source index: {source_index}")
+        destination_index = await self.get_igraph_index(
+            entity_id=destination,
+            graph=graph,
+        )
+        print(f"Destination index: {destination_index}")
+        end_index = await self.get_igraph_index(
+            entity_id=end_point,
+            graph=graph,
+        )
+        print(f"End index: {end_index}")
+        shortest_paths = graph.get_k_shortest_paths(
+            source_index,
+            to=destination_index,
+            k=k,
+            weights=graph.es["cost"],
+        )
+
+        if not shortest_paths:
+            return False
+
+        for path in shortest_paths:
+            complete_path = list(path)
+            if end_index not in complete_path:
+                complete_path.append(end_index)
+            PathManager.build_and_add_path(buffer_id, graph, complete_path)
+
+        return True
+
 #     async def bfs_weight_propagation(
 #         self,
 #         starting_node_id,
@@ -469,6 +525,152 @@ class GraphRetriever():
 #                 )
 
 #         return surviving_relationship_ids, edge_entity_ids
+
+    async def weight_paths(self, starting_node_ids, accepted_node_types, intermediate_goal, terminal_goal, hop_limit=5):
+        accepted_node_types = {
+            str(entity_type).lower()
+            for entity_type in (accepted_node_types or [])
+        }
+        graph = self.graph
+        if not starting_node_ids:
+            raise ValueError("starting_node_ids cannot be empty")
+        starting_vertices = [
+            await self.get_igraph_index(entity_id=starting_node_id)
+            for starting_node_id in starting_node_ids
+        ]
+
+        # (1) Build the query graph from everything reachable within five hops
+        # of at least one starting node.
+        hop_limit = min(max(int(hop_limit), 0), 5)
+        starting_distances = graph.distances(
+            source=starting_vertices,
+            mode="all",
+        )
+        vertex_hops = [
+            min(distances[vertex_id] for distances in starting_distances)
+            for vertex_id in range(graph.vcount())
+        ]
+        query_vertex_ids = [
+            vertex_id
+            for vertex_id, hop in enumerate(vertex_hops)
+            if hop <= hop_limit
+        ]
+        query_graph = graph.induced_subgraph(query_vertex_ids)
+        relationship_ids_by_hop = {
+            hop: [] for hop in range(1, hop_limit + 1)
+        }
+
+        relationship_hops = []
+        original_vertex_ids = {
+            vertex["name"]: vertex.index for vertex in graph.vs
+        }
+        for edge in query_graph.es:
+            source_id = original_vertex_ids[
+                query_graph.vs[edge.source]["name"]
+            ]
+            target_id = original_vertex_ids[
+                query_graph.vs[edge.target]["name"]
+            ]
+            relationship_hop = max(
+                vertex_hops[source_id],
+                vertex_hops[target_id],
+            )
+            relationship_hops.append(int(relationship_hop))
+            if 1 <= relationship_hop <= hop_limit:
+                relationship_ids_by_hop[int(relationship_hop)].append(
+                    edge["relation_id"]
+                )
+        query_graph.es["hop"] = relationship_hops
+
+        # (2) Put all ids into a temporary table and form a vector search over them using intermediate goal and terminal goal.
+        relationship_ids = [
+            relationship_id
+            for hop_relationship_ids in relationship_ids_by_hop.values()
+            for relationship_id in hop_relationship_ids
+        ]
+
+        def require_open_connection():
+            if self.conn is None:
+                raise RuntimeError("Database connection is not open")
+
+        async with TempVectorSpacePathWeights(
+            conn=self.conn,
+            lock=self.lock,
+            relationship_ids=relationship_ids,
+            conn_check_func=require_open_connection,
+        ) as path_vector_space:
+            intermediate_results, intermediate_tokens = await self.vector_search(
+                query=intermediate_goal,
+                table="relationship",
+                embedding_table=path_vector_space.embedding_table,
+                top_k=40,
+            )
+            terminal_results, terminal_tokens = await self.vector_search(
+                query=terminal_goal,
+                table="relationship",
+                embedding_table=path_vector_space.embedding_table,
+                top_k=40,
+            )
+
+            intermediate_weights = {
+                str(result["relation_id"]): result["similarity_score"]
+                for result in intermediate_results
+            }
+            terminal_weights = {
+                str(result["relation_id"]): result["similarity_score"]
+                for result in terminal_results
+            }
+
+            query_graph.es["intermediate_weight"] = [
+                intermediate_weights.get(str(edge["relation_id"]), 0.0)
+                for edge in query_graph.es
+            ]
+            query_graph.es["terminal_weight"] = [
+                terminal_weights.get(str(edge["relation_id"]), 0.0)
+                for edge in query_graph.es
+            ]
+
+            source_type_matches = []
+            target_type_matches = []
+            type_weights = []
+            relevance_weights = []
+            costs = []
+
+            for edge in query_graph.es:
+                source_type_match = float(any(
+                    str(entity_type).lower() in accepted_node_types
+                    for entity_type in query_graph.vs[edge.source]["entity_type"]
+                ))
+                target_type_match = float(any(
+                    str(entity_type).lower() in accepted_node_types
+                    for entity_type in query_graph.vs[edge.target]["entity_type"]
+                ))
+                semantic_weight = max(
+                    edge["intermediate_weight"],
+                    edge["terminal_weight"],
+                )
+
+                type_weight = (
+                    source_type_match + target_type_match
+                ) / 2.0
+                relevance_weight = (
+                    0.85 * semantic_weight
+                    + 0.15 * type_weight
+                )
+
+                source_type_matches.append(source_type_match)
+                target_type_matches.append(target_type_match)
+                type_weights.append(type_weight)
+                relevance_weights.append(relevance_weight)
+                costs.append(1.0 - relevance_weight)
+
+            query_graph.es["source_type_match"] = source_type_matches
+            query_graph.es["target_type_match"] = target_type_matches
+            query_graph.es["type_weight"] = type_weights
+            query_graph.es["relevance_weight"] = relevance_weights
+            query_graph.es["cost"] = costs
+
+            return query_graph, relationship_ids
 
     async def bfs_weight_propagation(
         self,

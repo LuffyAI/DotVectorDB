@@ -22,7 +22,7 @@ class Path:
         self.relationships = relationships
         self.relational_description = description
         self.path_text = " -> ".join(str(e.entity_name) for e in entities)
-        self.usefulness_score = 0.0
+        self.usefulness_score = [0.0, 0.0, 0.0]
 class PathManager:
     """Keep new candidate paths separate from the current best paths."""
     def __init__(self, tokenizer, max_tokens, top_k=40, BUFFER_SIZE=40):
@@ -35,15 +35,14 @@ class PathManager:
         Additional:
         path_buffer: A list to hold candidate paths before they are promoted to the top paths.
         current_top_paths: A list to hold the current top paths based on usefulness scores.
-        path_trie: A PathTrie instance to ensure we don't repeat paths with the same relationship sequence or paths
-        that don't add new information (i.e., shorter paths that are subsets of longer paths). It also saves money since
-        LLMs won't re-judge paths that are already judged.
+        path_trie: A PathTrie instance to ensure exact or reversed relationship
+        sequences are not sent to the LLM judge more than once.
         """
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
             raise ValueError("top_k must be a non-negative integer")
         self.top_k = top_k
         self.BUFFER_SIZE = BUFFER_SIZE
-        self.path_buffer = []
+        self.path_buffer = {}
         self.current_top_paths = []
         self.path_trie = PathTrie()
         self.tokenizer = tokenizer
@@ -56,13 +55,41 @@ class PathManager:
         if not path.relationships:
             raise ValueError("path must contain at least one relationship")
         return tuple(relationship.rel_id for relationship in path.relationships)
-    def add_path(self, path):
+    @staticmethod
+    def _validate_usefulness_score(score):
+        if not isinstance(score, (list, tuple)) or len(score) != 3:
+            raise ValueError(
+                "usefulness_score must contain exactly three scores"
+            )
+        normalized_score = []
+        for dimension_score in score:
+            if (
+                isinstance(dimension_score, bool)
+                or not isinstance(dimension_score, (int, float))
+                or not 0 <= dimension_score <= 100
+            ):
+                raise ValueError(
+                    "Each usefulness score must be a number from 0 to 100"
+                )
+            normalized_score.append(float(dimension_score))
+        return normalized_score
+    @staticmethod
+    def _usefulness_average(path):
+        score = PathManager._validate_usefulness_score(
+            path.usefulness_score
+        )
+        return sum(score) / len(score)
+    def prepare_buffer(self, id):
+        """Initialize a new candidate buffer for a given id."""
+        if id not in self.path_buffer:
+            self.path_buffer[id] = []
+    def add_path(self, id, path):
         """Add a previously unseen relationship path to the candidate buffer.
         A candidate is redundant when its relationship sequence is already a
         prefix represented by the trie. The returned value indicates whether
         the candidate was accepted.
         """
-        if len(self.path_buffer) >= self.BUFFER_SIZE:
+        if len(self.path_buffer[id]) >= self.BUFFER_SIZE:
             return
 
         # First, we get the relationship IDs from the path to use as a key for deduplication.
@@ -79,17 +106,20 @@ class PathManager:
         # Return False if the candidate was rejected, True if it was accepted.
         if not accepted:
             return False
-        self.path_buffer.append(path)
+        self.path_buffer[id].append(path)
         return True
     def remove_path_from_buffer(self, path):
         """Remove a path from the candidate buffer."""
-        if path in self.path_buffer:
-            self.path_buffer.remove(path)
+        for buffer in self.path_buffer.values():
+            if path in buffer:
+                buffer.remove(path)
+                return True
+        return False
     def remove_path_from_top_paths(self, path):
         """Remove a path from the current top paths."""
         if path in self.current_top_paths:
             self.current_top_paths.remove(path)
-    def build_and_add_path(self, graph, vertex_indices):
+    def build_and_add_path(self, id, graph, vertex_indices):
         """Build a Path from an igraph vertex route and add it to the buffer."""
         if len(vertex_indices) < 2:
             raise ValueError("vertex_indices must contain at least two vertices")
@@ -143,20 +173,20 @@ class PathManager:
             relationships=relationships,
             description=relational_description,
         )
-        return self.add_path(path)
-    def update_top_paths(self, k=None):
+        return self.add_path(id, path)
+    def update_top_paths(self, id, k=None):
         """Promote the best buffered paths and clear the candidate buffer."""
         if k is None:
             k = self.top_k
         if isinstance(k, bool) or not isinstance(k, int) or k < 0:
             raise ValueError("k must be a non-negative integer")
-        candidates = self.current_top_paths + self.path_buffer
+        candidates = self.current_top_paths + self.path_buffer[id]
         self.current_top_paths = sorted(
             candidates,
-            key=lambda path: path.usefulness_score,
+            key=self._usefulness_average,
             reverse=True,
         )[:k]
-        self.path_buffer.clear()
+        self.path_buffer[id].clear()
         return list(self.current_top_paths)
     def get_top_k_helpful_paths(self, k=None):
         """Return a snapshot of the current top-path memory."""
@@ -175,23 +205,23 @@ class PathManager:
             self.current_top_paths,
             k=min(k, len(self.current_top_paths)),
         )
-    def get_buffer_json(self):
+    def get_buffer_json(self, id):
         return [
             {
                 "id": index,
                 "path_text": path.path_text,
                 "relational_description": path.relational_description,
             }
-            for index, path in enumerate(self.path_buffer)
+            for index, path in enumerate(self.path_buffer[id])
         ]
-    def prepare_batches(self, batch_size, judge_prompt):
+    def prepare_batches(self, id, batch_size, judge_prompt):
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size <= 0:
             raise ValueError("batch_size must be a positive integer")
         if isinstance(judge_prompt, bool) or not isinstance(judge_prompt, str) or not judge_prompt.strip():
             raise ValueError("judge_prompt must be a non-empty string")
         if (isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0):
             raise ValueError("max_tokens must be a positive integer")
-        buffer_json = self.get_buffer_json()
+        buffer_json = self.get_buffer_json(id)
         judge_prompt_token_size = len(self.tokenizer.encode(judge_prompt))
         batches = []
         for start_index in range(0, len(buffer_json), batch_size):
@@ -327,8 +357,30 @@ class PathManager:
             if overflow <= 0:
                 return 0
         return overflow
-    def save_paths(self, choices, original_indices):
+    def save_paths(self, id, choices, original_indices):
+        if isinstance(choices, dict):
+            choices = choices["judgements"]
+
         for choice in choices:
             batch_id = choice["id"]
             original_index = original_indices[batch_id]
-            self.path_buffer[original_index].usefulness_score = choice["judgement"]
+            ordered_judgements = sorted(
+                choice["judgements"],
+                key=lambda judgement: judgement["checklist_item"],
+            )
+            checklist_items = [
+                judgement["checklist_item"]
+                for judgement in ordered_judgements
+            ]
+            if checklist_items != [1, 2, 3]:
+                raise ValueError(
+                    "Each path must contain checklist items 1, 2, and 3 "
+                    "exactly once"
+                )
+            usefulness_score = [
+                judgement["judgement"]
+                for judgement in ordered_judgements
+            ]
+            self.path_buffer[id][original_index].usefulness_score = (
+                self._validate_usefulness_score(usefulness_score)
+            )
