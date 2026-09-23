@@ -77,7 +77,8 @@ class GraphRetriever():
                             ),
                             '[]'
                         ) AS entity_types,
-                        entity.entity_name
+                        entity.entity_name,
+                        entity.entity_description
                     FROM entity
                     """
                 )
@@ -88,7 +89,14 @@ class GraphRetriever():
                 )
                 edges = await cursor.fetchall()
                 g = ig.Graph(directed=False)
-                g.add_vertices([str(node[0]) for node in nodes], attributes={"entity_type": [json.loads(node[1]) for node in nodes], "entity_name": [node[2] for node in nodes]})
+                g.add_vertices(
+                    [str(node[0]) for node in nodes],
+                    attributes={
+                        "entity_type": [json.loads(node[1]) for node in nodes],
+                        "entity_name": [node[2] for node in nodes],
+                        "entity_description": [node[3] for node in nodes],
+                    },
+                )
                 g.add_edges([(str(edge[1]), str(edge[2])) for edge in edges], attributes={"relation_id": [edge[0] for edge in edges], "relation_description": [edge[3] for edge in edges]})
                 g.write_pickle(self.graph_path)
             self.graph = await self.load_graph(verbose=verbose)
@@ -146,6 +154,192 @@ class GraphRetriever():
             return len(graph.incident(vertex, mode="all")) == 0
         except ValueError:
             raise KeyError(f"Entity does not exist: {entity_id}")
+
+    async def pathrag_path_algo(
+        self,
+        entity_ids,
+        top_k,
+    ):
+        """igraph port of PathRAG's flow-based path pruning algorithm."""
+        graph = self.graph
+        if graph is None:
+            raise ValueError("Graph is not loaded")
+        if not entity_ids:
+            return []
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0:
+            raise ValueError("top_k must be a non-negative integer")
+        if top_k == 0:
+            return []
+
+        source_nodes = [
+            await self.get_igraph_index(
+                entity_id=entity_id,
+                graph=graph,
+            )
+            for entity_id in entity_ids
+        ]
+
+        one_hop_paths = []
+        two_hop_paths = []
+        three_hop_paths = []
+        paths_by_pair = {}
+
+        # This reproduces PathRAG's ordered-pair DFS result, including the
+        # duplicate reverse traversal generated for an undirected graph.
+        for source in source_nodes:
+            for target in source_nodes:
+                if source == target:
+                    continue
+                paths = graph.get_all_simple_paths(
+                    source,
+                    to=target,
+                    maxlen=3,
+                    mode="all",
+                )
+                if not paths:
+                    continue
+                paths_by_pair[(source, target)] = paths
+                for path in paths:
+                    depth = len(path) - 1
+                    if depth == 1:
+                        one_hop_paths.append(path)
+                    elif depth == 2:
+                        two_hop_paths.append(path)
+                    elif depth == 3:
+                        three_hop_paths.append(path)
+
+        threshold = 0.3
+        alpha = 0.8
+        all_scored_paths = []
+
+        for source in source_nodes:
+            for target in source_nodes:
+                if source == target:
+                    continue
+                if (source, target) not in paths_by_pair:
+                    continue
+                paths = paths_by_pair[(source, target)]
+                following_vertices = defaultdict(set)
+                for path in paths:
+                    for current, following in zip(path[:-1], path[1:]):
+                        following_vertices[current].add(following)
+
+                edge_flow = defaultdict(float)
+
+                for neighbor in following_vertices[source]:
+                    edge_flow[(source, neighbor)] += (
+                        1.0 / len(following_vertices[source])
+                    )
+
+                    if neighbor == target:
+                        continue
+
+                    if edge_flow[(source, neighbor)] > threshold:
+                        for second_neighbor in following_vertices[neighbor]:
+                            edge_flow[(neighbor, second_neighbor)] += (
+                                edge_flow[(source, neighbor)]
+                                * alpha
+                                / len(following_vertices[neighbor])
+                            )
+
+                            if second_neighbor == target:
+                                continue
+
+                            if edge_flow[(neighbor, second_neighbor)] > threshold:
+                                for third_neighbor in following_vertices[
+                                    second_neighbor
+                                ]:
+                                    edge_flow[(
+                                        second_neighbor,
+                                        third_neighbor,
+                                    )] += (
+                                        edge_flow[(neighbor, second_neighbor)]
+                                        * alpha
+                                        / len(following_vertices[second_neighbor])
+                                    )
+
+                for path in paths:
+                    path_flow = sum(
+                        edge_flow[(current, following)]
+                        for current, following in zip(path[:-1], path[1:])
+                    ) / (len(path) - 1)
+                    all_scored_paths.append((path, path_flow))
+
+        all_scored_paths.sort(key=lambda item: item[1], reverse=True)
+
+        # PathRAG first halves the ordered-pair path counts, then uses their
+        # sum to cap its hard-coded top-15 result count. Here top_k replaces
+        # that 15 while retaining the same cap calculation.
+        available_path_count = (
+            int(len(one_hop_paths) / 2)
+            + int(len(two_hop_paths) / 2)
+            + int(len(three_hop_paths) / 2)
+        )
+        result_count = min(top_k, available_path_count)
+        if result_count == 0:
+            return []
+
+        unique_scored_paths = []
+        seen_paths = set()
+        for path, flow_score in all_scored_paths:
+            sorted_path = tuple(sorted(path))
+            if sorted_path in seen_paths:
+                continue
+            seen_paths.add(sorted_path)
+            unique_scored_paths.append((path, flow_score))
+            if len(unique_scored_paths) == result_count:
+                break
+
+        results = []
+        for vertex_path, flow_score in unique_scored_paths:
+            entities = []
+            relationships = []
+            relational_description = ""
+
+            for vertex_index in vertex_path:
+                vertex = graph.vs[vertex_index]
+                entity = Node(
+                    entity_id=vertex["name"],
+                    entity_name=vertex["entity_name"],
+                    entity_type=vertex["entity_type"],
+                    entity_description=vertex["entity_description"],
+                )
+                entities.append(entity)
+
+                if len(entities) > 1:
+                    previous_vertex_index = vertex_path[len(entities) - 2]
+                    edge_index = graph.get_eid(
+                        previous_vertex_index,
+                        vertex_index,
+                        directed=False,
+                    )
+                    edge = graph.es[edge_index]
+                    previous_entity = entities[-2]
+                    relationship = Edge(
+                        rel_id=edge["relation_id"],
+                        src_entity=previous_entity,
+                        dst_entity=entity,
+                        description=edge["relation_description"],
+                    )
+                    relationships.append(relationship)
+                    relational_description += (
+                        f"**{previous_entity.entity_name} "
+                        f"({previous_entity.entity_type})** is related to "
+                        f"**{entity.entity_name} ({entity.entity_type})** "
+                        f"because [{relationship.description}]."
+                    )
+
+            results.append((
+                Path(
+                    entities=entities,
+                    relationships=relationships,
+                    description=relational_description,
+                ),
+                flow_score,
+            ))
+
+        return results
+
     async def get_entity_neighbor_types(
         self,
         hops=10,
@@ -408,17 +602,17 @@ class GraphRetriever():
             entity_id=source,
             graph=graph,
         )
-        print(f"Source index: {source_index}")
+        # print(f"Source index: {source_index}")
         destination_index = await self.get_igraph_index(
             entity_id=destination,
             graph=graph,
         )
-        print(f"Destination index: {destination_index}")
+        # print(f"Destination index: {destination_index}")
         end_index = await self.get_igraph_index(
             entity_id=end_point,
             graph=graph,
         )
-        print(f"End index: {end_index}")
+        # print(f"End index: {end_index}")
         shortest_paths = graph.get_k_shortest_paths(
             source_index,
             to=destination_index,
@@ -433,7 +627,23 @@ class GraphRetriever():
             complete_path = list(path)
             if end_index not in complete_path:
                 complete_path.append(end_index)
-            PathManager.build_and_add_path(buffer_id, graph, complete_path)
+            path_weight = 0.0
+            for source_vertex, target_vertex in zip(
+                complete_path,
+                complete_path[1:],
+            ):
+                edge_index = graph.get_eid(
+                    source_vertex,
+                    target_vertex,
+                    directed=False,
+                )
+                path_weight += graph.es[edge_index]["cost"]
+            PathManager.build_and_add_path(
+                buffer_id,
+                graph,
+                complete_path,
+                weight=path_weight,
+            )
 
         return True
 

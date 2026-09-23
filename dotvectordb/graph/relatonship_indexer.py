@@ -2,6 +2,8 @@ from dotvectordb.prompts.relationship_prompts import RELATIONSHIP_PROMPT, ENTITY
 import json
 import traceback
 import asyncio
+import numpy as np
+from model2vec import StaticModel
 from tqdm.asyncio import tqdm_asyncio
 
 class RelationshipIndexer:
@@ -12,6 +14,29 @@ class RelationshipIndexer:
         self.hash_func = hash_func
         self.embedding_model = embedding_model
         self.add_embedding_func = add_embedding_func 
+        self.small_llm = StaticModel.from_pretrained("minishlab/potion-base-32M")
+
+    async def remove_extra_questions_from_relationship(self, questions, threshold=0.8):
+            """Deduplicate queries based on cosine similarity of their embeddings."""
+            embeddings = self.small_llm.encode(questions)
+            embeddings /= np.linalg.norm(
+                embeddings,
+                axis=1,
+                keepdims=True
+            )
+            sorted_indices = sorted(
+                range(len(questions)),
+                key=lambda i: len(questions[i])
+            )
+            kept_indices = []
+            for idx in sorted_indices:
+                if all(
+                    np.dot(embeddings[idx], embeddings[j]) < threshold
+                    for j in kept_indices
+                ):
+                    kept_indices.append(idx)
+            kept_indices.sort()
+            return [questions[i] for i in kept_indices]
     ############################################################
     #   Token Economics Tracking                               # 
     ############################################################
@@ -96,12 +121,14 @@ class RelationshipIndexer:
     ##########################################################################
     #       Relationship Extraction & Ingestion Operations for Indexing      # 
     ##########################################################################
-    async def extract_relation(self, number_to_entity_id_map, number_to_entity_name_map, chunk, cooldown=30):
+    async def extract_relation(self, chunk, cooldown=30):
         if not self.conn:
             raise RuntimeError("Database not opened")
         
         # We fill the relationship recognition prompt with the entity mapping and the chunk of text we want to analyze.
         chunk_hash = self.hash_func(chunk)
+        entity_ids = await self.get_entities_connected_to_chunk(chunk_hash)
+        number_to_entity_id_map, number_to_entity_name_map = await self.prepare_local_entity_mapping_for_chunk(entity_ids)
         embedding_model_hash = self.hash_func(self.embedding_model.model_name)
         embedding_model_hash_str = f"{embedding_model_hash}"
         RELATIONSHIP_PROMPT_FILLED = RELATIONSHIP_PROMPT.format(entities=json.dumps(number_to_entity_name_map), chunk=chunk, entity_example=ENTITY_EXAMPLE, input_example=INPUT_EXAMPLE, output_example=OUTPUT_EXAMPLE)
@@ -216,13 +243,8 @@ class RelationshipIndexer:
 
             tasks = []
             for chunk in batch:
-                chunk_id = self.hash_func(chunk[0])
-                entity_ids = await self.get_entities_connected_to_chunk(chunk_id)
-                number_to_entity_id_map, number_to_entity_name_map = await self.prepare_local_entity_mapping_for_chunk(entity_ids)
                 tasks.append(
                     self.extract_relation(
-                        number_to_entity_id_map=number_to_entity_id_map,
-                        number_to_entity_name_map=number_to_entity_name_map,
                         chunk=chunk[0]
                     )
                 )
@@ -272,60 +294,52 @@ class RelationshipIndexer:
     
     async def embed_relationships(self, async_cooldown=60, requests_per_minute=1000, verbose=True):
         relationships = await self.get_relationships_waiting_for_embedding()
-        async def embed_relationship(relationship, verbose=verbose):
-            pass
+        print(f"Found {len(relationships)} relationships waiting for embedding.")
+
+        async def embed_relationship(relationship):
             try:
-                 content = await self.get_relationship_prompt_for_embedding(relationship=relationship)
-                 src_entity_id = relationship["src_entity_id"]
-                 dst_entity_id = relationship["dst_entity_id"]
-                 hash_input = self.hash_func(f"{src_entity_id}_{dst_entity_id}")
-                 if verbose:
-                     print(f"Prompt for relationship {relationship['relation_id']}: {content}")
-                 await self.add_embedding_func(
-                     content=json.dumps(content, indent=4),
-                     table="relationship",
-                     pk_hash=hash_input
-                 )
-                 return None
+                content = await self.get_relationship_prompt_for_embedding(relationship)
+                questions = content["questions"]
+                if isinstance(questions, str):
+                    questions = json.loads(questions)
+                content["questions"] = await self.remove_extra_questions_from_relationship(questions)
+                if verbose:
+                    print(f"Prompt for relationship {relationship['relation_id']}: {content}")
+                await self.add_embedding_func(
+                    content=json.dumps(content, indent=4),
+                    table="relationship",
+                    pk_hash=relationship["relation_id"],
+                )
+                return None
             except Exception as error:
                 if verbose:
                     print(f"Embedding failed, retrying next batch: {error}")
-                traceback.format_exc()
+                traceback.print_exc()
                 return relationship
-            
-        if relationships:
-            if verbose:
-                    print(f"Found {len(relationships)} unprocessed relationships. Starting to add embeddings...")
-            failed_relationships = relationships.copy()
 
-            while failed_relationships:
-                current_batch = failed_relationships[:requests_per_minute]
-                remaining_relationships = failed_relationships[requests_per_minute:]
-                failed_relationships = []
+        failed_relationships = relationships.copy()
+        while failed_relationships:
+            current_batch = failed_relationships[:requests_per_minute]
+            print(f"Processing batch of {len(current_batch)} relationships for embedding.")
+            remaining_relationships = failed_relationships[requests_per_minute:]
+            batch_results = await tqdm_asyncio.gather(
+                *(embed_relationship(relationship) for relationship in current_batch),
+                desc="Embedding relationships",
+                total=len(current_batch),
+            )
+            failed_relationships = [
+                relationship for relationship in batch_results
+                if relationship is not None
+            ]
+            failed_relationships.extend(remaining_relationships)
 
-            
-                batch_results = await tqdm_asyncio.gather(
-                        *(embed_relationship(relationship) for relationship in current_batch),
-                        desc="Embedding relationships",
-                        total=len(current_batch)
+            if failed_relationships:
+                if verbose:
+                    print(
+                        f"Cooldown for {async_cooldown} seconds. "
+                        f"{len(failed_relationships)} relationships remaining."
                     )
-              
-
-                failed_relationships.extend([
-                    relationship for relationship in batch_results
-                    if relationship is not None
-                ])
-
-                failed_relationships.extend(remaining_relationships)
-
-                if failed_relationships:
-                    if verbose:
-                        print(
-                            f"Cooldown for {async_cooldown} seconds. "
-                            f"{len(failed_relationships)} relationships remaining."
-                        )
-
-                    await asyncio.sleep(async_cooldown)
+                await asyncio.sleep(async_cooldown)
 
     
  

@@ -7,7 +7,7 @@ from dotvectordb.interfaces.LanguageModel import LanguageModel, FinalResponse
 class OpenAiAgent(LanguageModel):
     def __init__(
         self,
-        model_name: str = os.getenv("OPENAI_LLM_MODEL", "gpt-4o"),
+        model_name: str = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
         api_key: str = os.getenv("OPENAI_API_KEY"),
         max_tokens: int = int(os.getenv("OPENAI_LLM_MAX_TOKENS", 4096)),
         Tokenizer: str = os.getenv("OPENAI_LLM_TOKENIZER", "gpt-4o"),

@@ -93,11 +93,7 @@ class TempVectorSpacePathWeights:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        async with self.lock:
-            await self.conn.execute(
-                f"DROP TABLE IF EXISTS {self.embedding_table};"
-            )
-            await self.conn.commit()
+        pass
 
     async def _copy_relationship_embeddings_to_temp(
         self,

@@ -29,6 +29,7 @@ import aiosqlite
 import asyncio
 import traceback
 import tiktoken
+import warnings
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
     def __init__(self, path: str, 
@@ -81,19 +82,6 @@ class DotVectorDB:
             return None
         column_names = [description[0] for description in cursor.description]
         return dict(zip(column_names, row))
-    def __require_bm25_index(self, table_name: str) -> None:
-        """Helper function to ensure that a BM25 index exists for the specified table."""
-        self.__require_open_connection()
-        index_name = f"{table_name}_fts"
-        async def check_index():
-            async with self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (index_name,)
-            ) as cursor:
-                result = await cursor.fetchone()
-                if result is None:
-                    raise RuntimeError(f"BM25 index '{index_name}' does not exist for table '{table_name}'. Please create it first.")
-        asyncio.run(check_index())
     def __read_schema_file(self, filename: str) -> str:
         """Helper function to read a schema file and return its contents as a string."""
         file = (BASE_DIR / "schema" / filename).read_text(encoding="utf-8")
@@ -103,24 +91,6 @@ class DotVectorDB:
         print("==================================================================")
         print(message)
         print("==================================================================")
-    async def count_llm_tokens(self, stage):
-        self.__require_open_connection()
-        valid_stages = {"entity", "relation", "global_desc", "retrieval"}
-        if stage not in valid_stages:
-            raise ValueError(
-                f"Invalid stage '{stage}'. "
-                f"Must be one of: {', '.join(sorted(valid_stages))}"
-            )
-        cursor = await self.conn.execute(
-            """
-            SELECT COALESCE(SUM(total_tokens), 0)
-            FROM llm_token_usage
-            WHERE stage = ?
-            """,
-            (stage,)
-        )
-        row = await cursor.fetchone()
-        return row[0]
     ############################################################
     #   Functions For Opening and Closing DotVDB               # 
     ############################################################
@@ -904,6 +874,24 @@ class DotVectorDB:
     #####################################################################
     # Function For a Full Construction (Corpus-> Chunks -> Full Graph)  # 
     #####################################################################
+    async def count_llm_tokens(self, stage):
+                self.__require_open_connection()
+                valid_stages = {"entity", "relation", "global_desc", "retrieval"}
+                if stage not in valid_stages:
+                    raise ValueError(
+                        f"Invalid stage '{stage}'. "
+                        f"Must be one of: {', '.join(sorted(valid_stages))}"
+                    )
+                cursor = await self.conn.execute(
+                    """
+                    SELECT COALESCE(SUM(total_tokens), 0)
+                    FROM llm_token_usage
+                    WHERE stage = ?
+                    """,
+                    (stage,)
+                )
+                row = await cursor.fetchone()
+                return row[0]
     async def construct_GraphRAG(self, input_document_list=None, entity_types=None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
         # First, we ingest the documents into the database, which includes extracting text, chunking it, and adding embeddings.
         try:
@@ -991,6 +979,7 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
+    
     ############################################################
     #   Functions For DotVDB's Vector Ingestion + Search       # 
     ############################################################
@@ -1034,6 +1023,13 @@ class DotVectorDB:
                 SET is_embedded = 1
                 WHERE rowid = ?
                 """
+                try:
+                     embedding_blob, tokens = await self.embedding_model.embed(content)
+                     if embedding_blob.shape[-1] != self.DIM:
+                        raise RuntimeError(f"Embedding dimension mismatch: expected {self.DIM}, got {embedding_blob.shape[-1]}")
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the add_embedding function inside DotVectorDB: {e}")
                 async with self.lock:
                     # First, we check if the base table exists and has a valid primary key
                     async with self.conn.execute(CHECK_BASE_TABLE_AND_PRIMARY_KEY_SQL) as cursor:
@@ -1049,9 +1045,6 @@ class DotVectorDB:
                     await self.conn.execute(CREATE_EMBEDDING_TABLE_SQL)
                     # Third, we insert the embedding into the embedding table
                     try:
-                        embedding_blob, tokens = await self.embedding_model.embed(content)
-                        if embedding_blob.shape[-1] != self.DIM:
-                            raise RuntimeError(f"Embedding dimension mismatch: expected {self.DIM}, got {embedding_blob.shape[-1]}")
                         await self.conn.execute(INSERT_INTO_EMBEDDING_TABLE_SQL, (pk_hash, embedding_blob))
                         await self.conn.execute(UPDATE_TABLE_STATUS, (pk_hash,))
                         await self.conn.commit()
@@ -1161,7 +1154,7 @@ class DotVectorDB:
             """
             self.__require_open_connection()
             gathered_results = None
-            Manager = PathManager(tokenizer=self.tokenizer, max_tokens=MAX_TOKENS, top_k=top_k) 
+            Manager = PathManager(tokenizer=self.tokenizer, max_tokens=MAX_TOKENS, top_k=top_k, query=query)
             async with AsyncTempVectorSpace(query=query, conn=self.conn,DOTs=DOTs, conn_check_func=self.__require_open_connection, lock=self.lock) as QueryWS:
                 # The custom_search_algo should be some DOT-based retrieval algorithm
                 # The search is performed concurrently for each DOT
@@ -1344,6 +1337,604 @@ class DotVectorDB:
                     "Error in the hybrid_vector_BM25_search function "
                     f"inside DotVectorDB: {e}"
                 )
+    ############################################################
+    #   Functions For Pre-Determined Graph Construction        # 
+    ############################################################
+    def __verify_source_json(self, source_json: list[dict]) -> dict[str, str]:
+            """
+            Expected Schema for the source:
+            [
+                {
+                    "source_name": "The name of the source.",
+                    "source_description": "A brief description of the source.",
+                }
+            ]
+            Returns a mapping of each unique source name to its generated source ID.
+            """
+            source_name_to_id = {}
+            if not isinstance(source_json, list):
+                raise TypeError("Source JSON must be a list of source objects.")
+            for index, source in enumerate(source_json):
+                if not isinstance(source, dict):
+                    raise TypeError(
+                        f"Source at index {index} must be an object (dictionary)."
+                    )
+                if "source_name" not in source:
+                    raise ValueError(
+                        f"Source at index {index} is missing the required "
+                        "'source_name' key."
+                    )
+                source_name = source["source_name"]
+                if not isinstance(source_name, str):
+                    raise TypeError(
+                        f"'source_name' for source at index {index} must be a string."
+                    )
+                if not source_name.strip():
+                    raise ValueError(
+                        f"'source_name' for source at index {index} cannot be empty."
+                    )
+                source_id = str(
+                    self.hashing_func.content_hash(source_name)
+                )
+                source["source_id"] = source_id
+                source_name_to_id[source_name] = source_id
+            return source_name_to_id
+    def __verify_prechunked_corpus(
+            self,
+            source_name_to_id: dict[str, str],
+            chunk_json_list: list[dict]
+        ) -> tuple[dict, list[dict]]:
+            """
+            Expected Schema for each chunk in the list:
+            [
+                {
+                    "chunk_id": "Unique identifier for the chunk.",
+                    "content": "The actual text content of the chunk.",
+                    "source_name": "Unique identifier for the source.",
+                }
+            ]
+            Returns the local-to-generated chunk ID mapping and the enriched chunk
+            JSON list.
+            """
+            if not isinstance(source_name_to_id, dict):
+                raise TypeError("source_name_to_id must be a dictionary.")
+            if not isinstance(chunk_json_list, list):
+                raise TypeError("Chunk JSON must be a list of chunk objects.")
+    
+            local_chunk_ids_to_new_chunk_ids = {}
+            seen_chunk_ids = set()
+            seen_content = set()
+    
+            # Validate the complete input before modifying any chunk dictionaries.
+            for index, chunk in enumerate(chunk_json_list):
+                if not isinstance(chunk, dict):
+                    raise TypeError(
+                        f"Chunk at index {index} must be an object (dictionary)."
+                    )
+                if "chunk_id" not in chunk:
+                    raise ValueError(
+                        f"Chunk at index {index} is missing the required 'chunk_id' key."
+                    )
+                local_chunk_id = chunk["chunk_id"]
+                try:
+                    if local_chunk_id in seen_chunk_ids:
+                        raise ValueError(
+                            f"Duplicate chunk_id '{local_chunk_id}' found at index {index}."
+                        )
+                    seen_chunk_ids.add(local_chunk_id)
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'chunk_id' for chunk at index {index} must be hashable."
+                    ) from exc
+                if "source_name" not in chunk:
+                    raise ValueError(
+                        f"Chunk '{local_chunk_id}' is missing the required "
+                        "'source_name' key."
+                    )
+                source_name = chunk["source_name"]
+                if not isinstance(source_name, str):
+                    raise TypeError(
+                        f"'source_name' for chunk '{local_chunk_id}' must be a string."
+                    )
+                if source_name not in source_name_to_id:
+                    raise ValueError(
+                        f"Chunk '{local_chunk_id}' references unknown source_name "
+                        f"'{source_name}'."
+                    )
+                if "content" not in chunk:
+                    raise ValueError(
+                        f"Chunk '{local_chunk_id}' is missing the required 'content' key."
+                    )
+                content = chunk["content"]
+                if not isinstance(content, str):
+                    raise TypeError(
+                        f"'content' for chunk '{local_chunk_id}' must be a string."
+                    )
+                if not content.strip():
+                    raise ValueError(
+                        f"'content' for chunk '{local_chunk_id}' cannot be empty."
+                    )
+                if content in seen_content:
+                    raise ValueError(
+                        f"Duplicate content found for chunk '{local_chunk_id}'."
+                    )
+                seen_content.add(content)
+            for chunk in chunk_json_list:
+                local_chunk_id = chunk["chunk_id"]
+                new_chunk_id = str(
+                    self.hashing_func.content_hash(chunk["content"])
+                )
+                local_chunk_ids_to_new_chunk_ids[local_chunk_id] = new_chunk_id
+                chunk["chunk_id"] = new_chunk_id
+                chunk["source_id"] = source_name_to_id[chunk["source_name"]]
+            return local_chunk_ids_to_new_chunk_ids, chunk_json_list
+    def __verify_prebuilt_entity_json(
+            self,
+            local_chunks_to_new_chunks_ids: dict[str, str],
+            entity_json: list[dict]
+        ) -> tuple[dict, list[dict]]:
+            """
+            TODO: ADD TOKEN COUNTING TO ENSURE IT DOESN'T GO OVER EMBEDDING WINDOW
+                    Expected Schema for each entity in the list:
+                    [
+                        {
+                            "entity_id": "Unique identifier for the entity.",
+                            "chunk_id": "Unique identifier for the chunk associated with the entity.",
+                            "entity_name": "The actual name of the entity.",
+                            "entity_description": "The description of the entity.",
+                            "entity_types": ["List of types associated with the entity."],
+                            "questions": ["List of questions related to the entity."],
+                        }
+                    ]
+            Returns the local-to-generated entity ID mapping and the enriched
+            entity JSON list.
+            """
+            if not isinstance(local_chunks_to_new_chunks_ids, dict):
+                raise TypeError(
+                    "local_chunks_to_new_chunks_ids must be a dictionary."
+                )
+            if not isinstance(entity_json, list):
+                raise TypeError("Entity JSON must be a list of entity objects.")
+            local_entity_ids_to_new_entity_ids = {}
+            seen_local_entity_ids = set()
+            prepared_entities = []
+            entities_with_multiple_types = []
+            # Validate the complete input before modifying any entity dictionaries.
+            for index, entity in enumerate(entity_json):
+                if not isinstance(entity, dict):
+                    raise TypeError(
+                        f"Entity at index {index} must be an object (dictionary)."
+                    )
+                missing_keys = [
+                    key
+                    for key in ("entity_id", "chunk_id", "entity_name")
+                    if key not in entity
+                ]
+                if missing_keys:
+                    raise ValueError(
+                        f"Entity at index {index} is missing required key(s): "
+                        f"{', '.join(missing_keys)}."
+                    )
+    
+                local_entity_id = entity["entity_id"]
+                try:
+                    if local_entity_id in seen_local_entity_ids:
+                        raise ValueError(
+                            f"Duplicate entity_id '{local_entity_id}' found at "
+                            f"index {index}."
+                        )
+                    seen_local_entity_ids.add(local_entity_id)
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'entity_id' for entity at index {index} must be hashable."
+                    ) from exc
+    
+                local_chunk_id = entity["chunk_id"]
+                try:
+                    new_chunk_id = local_chunks_to_new_chunks_ids[local_chunk_id]
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'chunk_id' for entity '{local_entity_id}' must be hashable."
+                    ) from exc
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Entity '{local_entity_id}' references unknown chunk_id "
+                        f"'{local_chunk_id}'."
+                    ) from exc
+    
+                entity_name = entity["entity_name"]
+                if not isinstance(entity_name, str):
+                    raise TypeError(
+                        f"'entity_name' for entity '{local_entity_id}' must be a string."
+                    )
+                normalized_entity_name = entity_name.strip().lower()
+                if not normalized_entity_name:
+                    raise ValueError(
+                        f"'entity_name' for entity '{local_entity_id}' cannot be empty."
+                    )
+    
+                entity_description = entity.get("entity_description", "")
+                if entity_description is None:
+                    entity_description = ""
+                if not isinstance(entity_description, str):
+                    raise TypeError(
+                        f"'entity_description' for entity '{local_entity_id}' "
+                        "must be a string."
+                    )
+    
+                entity_types = entity.get("entity_types", [])
+                if entity_types is None:
+                    entity_types = []
+                if not isinstance(entity_types, list):
+                    raise TypeError(
+                        f"'entity_types' for entity '{local_entity_id}' must be a list."
+                    )
+                if any(not isinstance(entity_type, str) for entity_type in entity_types):
+                    raise TypeError(
+                        f"Every entity type for entity '{local_entity_id}' must be "
+                        "a string."
+                    )
+    
+                questions = entity.get("questions", [])
+                if questions is None:
+                    questions = []
+                if not isinstance(questions, list):
+                    raise TypeError(
+                        f"'questions' for entity '{local_entity_id}' must be a list."
+                    )
+                if any(not isinstance(question, str) for question in questions):
+                    raise TypeError(
+                        f"Every question for entity '{local_entity_id}' must be a string."
+                    )
+    
+                if len(entity_types) > 1:
+                    entities_with_multiple_types.append(local_entity_id)
+    
+                new_entity_id = self.hashing_func.content_hash(
+                    normalized_entity_name
+                )
+                prepared_entities.append(
+                    (
+                        entity,
+                        local_entity_id,
+                        new_entity_id,
+                        new_chunk_id,
+                        normalized_entity_name,
+                        entity_description,
+                        entity_types,
+                        questions,
+                    )
+                )
+    
+            if entities_with_multiple_types:
+                warnings.warn(
+                    "Entities with local entity_id(s) "
+                    f"{entities_with_multiple_types} have more than one entity type. "
+                    "They are supported by DotRAG but may be incompatible with "
+                    "GraphRAG, LightRAG, PathRAG, and other methods that require "
+                    "exactly one type per node.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+    
+            for (
+                entity,
+                local_entity_id,
+                new_entity_id,
+                new_chunk_id,
+                normalized_entity_name,
+                entity_description,
+                entity_types,
+                questions,
+            ) in prepared_entities:
+                local_entity_ids_to_new_entity_ids[local_entity_id] = new_entity_id
+                entity["entity_id"] = new_entity_id
+                entity["chunk_id"] = new_chunk_id
+                entity["entity_name"] = normalized_entity_name
+                entity["entity_description"] = entity_description
+                entity["entity_types"] = entity_types
+                entity["questions"] = questions
+                entity["_is_entity_enriched"] = bool(entity_description.strip())
+                entity["does_entity_have_types"] = bool(entity_types)
+                entity["does_entity_have_questions"] = bool(questions)
+    
+            return local_entity_ids_to_new_entity_ids, entity_json
+    def __verify_prebuilt_relationship_json(
+            self,
+            old_entity_id_to_new_entity_id: dict[str, str],
+            relationship_json: list[dict]
+        ) -> list[dict]:
+            """
+            TODO: ADD TOKEN COUNTING TO ENSURE IT DOESN'T GO OVER EMBEDDING WINDOW
+            Expected Schema for each relationship in the list:
+            [
+                {
+                    "src_entity_id": "Unique identifier for the entity.",
+                    "dst_entity_id": "Unique identifier for the related entity.",
+                    "relation_description": "The description of the entity.",
+                    "keywords": ["List of types associated with the entity."],
+                    "weight": "The weight of the relationship.",
+                    "questions": ["List of questions related to the entity."],
+                }
+            ]
+    
+            Only the source and destination entity IDs are required. Optional
+            metadata is defaulted and marked for later enrichment when absent.
+            """
+            if not isinstance(old_entity_id_to_new_entity_id, dict):
+                raise TypeError(
+                    "old_entity_id_to_new_entity_id must be a dictionary."
+                )
+            if not isinstance(relationship_json, list):
+                raise TypeError(
+                    "Relationship JSON must be a list of relationship objects."
+                )
+    
+            prepared_relationships = []
+    
+            # Validate the complete input before modifying any relationships.
+            for index, relationship in enumerate(relationship_json):
+                if not isinstance(relationship, dict):
+                    raise TypeError(
+                        f"Relationship at index {index} must be an object "
+                        "(dictionary)."
+                    )
+    
+                missing_keys = [
+                    key
+                    for key in ("src_entity_id", "dst_entity_id")
+                    if key not in relationship
+                ]
+                if missing_keys:
+                    raise ValueError(
+                        f"Relationship at index {index} is missing required "
+                        f"key(s): {', '.join(missing_keys)}."
+                    )
+    
+                old_src_entity_id = relationship["src_entity_id"]
+                old_dst_entity_id = relationship["dst_entity_id"]
+                try:
+                    new_src_entity_id = old_entity_id_to_new_entity_id[
+                        old_src_entity_id
+                    ]
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'src_entity_id' for relationship at index {index} "
+                        "must be hashable."
+                    ) from exc
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Relationship at index {index} references unknown "
+                        f"src_entity_id '{old_src_entity_id}'."
+                    ) from exc
+    
+                try:
+                    new_dst_entity_id = old_entity_id_to_new_entity_id[
+                        old_dst_entity_id
+                    ]
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'dst_entity_id' for relationship at index {index} "
+                        "must be hashable."
+                    ) from exc
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Relationship at index {index} references unknown "
+                        f"dst_entity_id '{old_dst_entity_id}'."
+                    ) from exc
+    
+                relation_description = relationship.get("relation_description", "")
+                if relation_description is None:
+                    relation_description = ""
+                if not isinstance(relation_description, str):
+                    raise TypeError(
+                        f"'relation_description' for relationship at index "
+                        f"{index} must be a string."
+                    )
+    
+                keywords = relationship.get("keywords", [])
+                if keywords is None:
+                    keywords = []
+                if not isinstance(keywords, list):
+                    raise TypeError(
+                        f"'keywords' for relationship at index {index} must be a list."
+                    )
+                if any(not isinstance(keyword, str) for keyword in keywords):
+                    raise TypeError(
+                        f"Every keyword for relationship at index {index} must "
+                        "be a string."
+                    )
+    
+                questions = relationship.get("questions", [])
+                if questions is None:
+                    questions = []
+                if not isinstance(questions, list):
+                    raise TypeError(
+                        f"'questions' for relationship at index {index} must be a list."
+                    )
+                if any(not isinstance(question, str) for question in questions):
+                    raise TypeError(
+                        f"Every question for relationship at index {index} must "
+                        "be a string."
+                    )
+    
+                weight = relationship.get("weight")
+                if weight is not None and (
+                    isinstance(weight, bool) or not isinstance(weight, (int, float))
+                ):
+                    raise TypeError(
+                        f"'weight' for relationship at index {index} must be a number."
+                    )
+    
+                relation_id = self.hashing_func.content_hash(
+                    f"{new_src_entity_id}_{new_dst_entity_id}"
+                )
+                prepared_relationships.append(
+                    (
+                        relationship,
+                        relation_id,
+                        new_src_entity_id,
+                        new_dst_entity_id,
+                        relation_description,
+                        keywords,
+                        weight,
+                        questions,
+                    )
+                )
+    
+            for (
+                relationship,
+                relation_id,
+                new_src_entity_id,
+                new_dst_entity_id,
+                relation_description,
+                keywords,
+                weight,
+                questions,
+            ) in prepared_relationships:
+                relationship["relation_id"] = relation_id
+                relationship["src_entity_id"] = new_src_entity_id
+                relationship["dst_entity_id"] = new_dst_entity_id
+                relationship["relation_description"] = relation_description
+                relationship["keywords"] = keywords
+                relationship["weight"] = weight
+                relationship["questions"] = questions
+                relationship["_is_relationship_enriched"] = bool(
+                    relation_description.strip()
+                )
+                relationship["does_relationship_have_keywords"] = bool(keywords)
+                relationship["does_relationship_have_weight"] = weight is not None
+                relationship["does_relationship_have_questions"] = bool(questions)
+            return relationship_json
+    def __verify_fixed_knowledge_graph(
+        self,
+        entity_json: list[dict],
+        rel_json: list[dict]
+    ) -> igraph.Graph:
+        """Build a fixed knowledge graph from verified entity and relation JSON."""
+        if not isinstance(entity_json, list):
+            raise TypeError("Entity JSON must be a list of entity objects.")
+        if not isinstance(rel_json, list):
+            raise TypeError(
+                "Relationship JSON must be a list of relationship objects."
+            )
+
+        # Entity extraction can associate the same normalized entity with more
+        # than one chunk. Keep one graph vertex per generated entity ID, just as
+        # the entity table and normal graph-construction path do.
+        entities_by_id = {
+            str(entity["entity_id"]): entity
+            for entity in entity_json
+        }
+        relationships_by_id = {
+            str(relationship["relation_id"]): relationship
+            for relationship in rel_json
+        }
+
+        graph = igraph.Graph(directed=False)
+        graph.add_vertices(
+            list(entities_by_id),
+            attributes={
+                "entity_type": [
+                    entity.get("entity_types", [])
+                    for entity in entities_by_id.values()
+                ],
+                "entity_name": [
+                    entity["entity_name"]
+                    for entity in entities_by_id.values()
+                ],
+                "entity_description": [
+                    entity.get("entity_description", "")
+                    for entity in entities_by_id.values()
+                ],
+            },
+        )
+
+        graph.add_edges(
+            [
+                (
+                    str(relationship["src_entity_id"]),
+                    str(relationship["dst_entity_id"]),
+                )
+                for relationship in relationships_by_id.values()
+            ],
+            attributes={
+                "relation_id": [
+                    relationship["relation_id"]
+                    for relationship in relationships_by_id.values()
+                ],
+                "relation_description": [
+                    relationship.get("relation_description", "")
+                    for relationship in relationships_by_id.values()
+                ],
+            },
+        )
+        return graph
+    async def construct_custom_GraphRAG(self, chunks: list[dict], graph: igraph.Graph = None,  entities: list[dict] = None, rels_json: list[dict] = None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
+                   # First, validate the provided information before we make any llm or embedding calls.
+                   try: 
+                       self.__graph_construction_print("STEP ONE: COLLECTING SOURCE DOCUMENTS AND VERIFYING THEIR FORMAT")
+                       source_name_to_id = self.__verify_source_json(chunks)
+                   except Exception as e:
+                       traceback.print_exc()
+                       raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the source JSON: {e}")
+                   try: 
+                        self.__graph_construction_print("STEP TWO: VERIFYING THE FORMAT OF PROVIDED CHUNKS")
+                        old_chunk_ids_to_new_chunk_ids, chunk_json_list = self.__verify_prechunked_corpus(source_name_to_id, chunks)
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the chunk JSON: {e}")
+                   try: 
+                        self.__graph_construction_print("STEP THREE: VALIDATING PROVIDED ENTITY JSON FORMAT")
+                        local_entity_ids_to_new_entity_ids, entity_json = self.__verify_prebuilt_entity_json(old_chunk_ids_to_new_chunk_ids, entities)
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the entity JSON: {e}")
+                   try:
+                        self.__graph_construction_print("STEP FOUR: VALIDATING PROVIDED RELATIONSHIP JSON FORMAT")
+                        relationship_json = self.__verify_prebuilt_relationship_json(local_entity_ids_to_new_entity_ids, rels_json)
+                   except Exception as e:
+                          traceback.print_exc()
+                          raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the relationship JSON: {e}")
+                   try:
+                       self.__graph_construction_print("STEP FIVE: CREATING THE INITIAL GRAPH REPRESENTATION OF THE DATABASE")
+                       graph = self.__verify_fixed_knowledge_graph(
+                           entity_json,
+                           relationship_json,
+                       )
+                   except Exception as e:
+                       traceback.print_exc()
+                       raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the graph: {e}")
+                    
+                   # Second, we ingest the chunks into the database.
+                   try:
+                        total_chunks = []
+                        self.__graph_construction_print("STEP SIX: INGESTING THE CHUNKS INTO THE DATABASE")
+                        for chunk in tqdm_asyncio(chunk_json_list, desc=f"Adding chunks from custom chunks into the DB"):
+                            self.add_chunk(
+                                content=chunk["content"],
+                                source_name=chunk["source_name"],
+                                model_name=self.embedding_model.embedding_model_name
+                            )
+                            total_chunks.append(chunk)
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while adding chunks to the database: {e}")
+
+                    # Third, we check if the LLM needs to fill in any missing entity values: descriptions, entity types, or questions.
+                    
+
+                    # Fourth, we check if the LLM needs to fill in any missing relationship values: descriptions, keywords, or questions.
+
+                    # Fifth, both GraphRAG & LightRAG require weights for relationships. We can compute this once entities and relations are stored in the database.
+                             
+                    # Sixth, for DotRAG, we generate the global description of the graph.
+
+                    # Finally, we create the embeddings for the chunks, entities, and relationships, and store them in the database.
+    async def export_DotRAG_to_LightRAG_PathRAG_Graph(self):
+        pass
+    async def export_DotRAG_to_MS_GraphRAG_Graph(self):
+        pass
     ############################################################
     #   Functions For Visualuzing DotVDB's Graphs              # 
     ############################################################
