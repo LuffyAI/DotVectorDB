@@ -11,9 +11,13 @@ from dotvectordb.prompts.entity_prompts import DEFAULT_ENTITY_TYPES, isEntityTyp
 from dotvectordb.graph.entity_indexer import EntityIndexer
 from dotvectordb.graph.entity_indexer2 import EntityIndexer2
 from dotvectordb.graph.entity_indexer3 import EntityIndexer3
+from dotvectordb.graph.entity_indexer4 import EntityIndexer4
 from dotvectordb.graph.dedupe_indexer import DedupeIndexer
 from dotvectordb.graph.relatonship_indexer import RelationshipIndexer
 from dotvectordb.graph.relationship_indexer2 import RelationshipIndexer2
+from dotvectordb.graph.relationship_indexer3 import (
+    RelationshipIndexer as RelationshipIndexer3,
+)
 from dotvectordb.graph.type_indexer import TypeIndexer
 from dotvectordb.graph.graph_retriever import GraphRetriever
 from dotvectordb.graph.generate_global_desc import GlobalDescriptionGenerator
@@ -1672,6 +1676,67 @@ class DotVectorDB:
                 entity["does_entity_have_questions"] = bool(questions)
     
             return local_entity_ids_to_new_entity_ids, entity_json
+    def __verify_entity_types(
+            self,
+            entity_json: list[dict],
+            entity_types_json: dict[str, str] = None,
+        ) -> dict[str, str]:
+            """Verify definitions exist for every custom entity type in use."""
+            if not isinstance(entity_json, list):
+                raise TypeError("Entity JSON must be a list of entity objects.")
+
+            used_entity_types = {
+                entity_type
+                for entity in entity_json
+                for entity_type in entity.get("entity_types", [])
+            }
+            if not used_entity_types:
+                if entity_types_json is None:
+                    return {}
+                if not isinstance(entity_types_json, dict):
+                    raise TypeError(
+                        "entity_types_json must be a dictionary mapping entity "
+                        "type names to definitions."
+                    )
+                return entity_types_json
+
+            if entity_types_json is None:
+                raise ValueError(
+                    "entity_types_json is required because the entity JSON "
+                    "contains entity types."
+                )
+            if not isinstance(entity_types_json, dict):
+                raise TypeError(
+                    "entity_types_json must be a dictionary mapping entity "
+                    "type names to definitions."
+                )
+
+            invalid_definitions = [
+                entity_type
+                for entity_type, definition in entity_types_json.items()
+                if not isinstance(entity_type, str)
+                or not entity_type.strip()
+                or not isinstance(definition, str)
+                or not definition.strip()
+            ]
+            if invalid_definitions:
+                raise ValueError(
+                    "Every entity type and definition in entity_types_json "
+                    "must be a nonempty string. Invalid type(s): "
+                    f"{invalid_definitions}."
+                )
+
+            missing_definitions = sorted(
+                used_entity_types - set(entity_types_json)
+            )
+            if missing_definitions:
+                raise ValueError(
+                    "Missing definitions in entity_types_json for entity "
+                    f"type(s): {missing_definitions}."
+                )
+
+            return entity_types_json
+
     def __verify_prebuilt_relationship_json(
             self,
             old_chunk_id_to_new_chunk_id: dict[str, str],
@@ -1968,10 +2033,76 @@ class DotVectorDB:
         )
         return graph
     async def ingest_and_embed_custom_entities(self, entity_json, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
-           pass
-    async def ingest_and_embed_custom_relationships(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
-           pass
-    async def construct_custom_GraphRAG(self, chunks: list[dict], graph: igraph.Graph = None,  entities: list[dict] = None, rels_json: list[dict] = None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
+           self.__require_open_connection()
+           try:
+               await self.add_entity_types(entity_types)
+               registered_entity_types = await self.get_entity_types()
+               entity_indexer = EntityIndexer4(
+                   conn=self.conn,
+                   lock=self.lock,
+                   language_model=self.language_model.generate,
+                   embedding_model=self.embedding_model,
+                   hash_func=self.hashing_func.content_hash,
+                   entity_groups=registered_entity_types,
+                   add_embedding_func=self.add_embedding,
+               )
+               await entity_indexer.ingest_custom_entities_from_ingested_chunks(
+                   custom_entities_json=entity_json,
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+               await entity_indexer.fix_entities(
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+               await entity_indexer.embed_entities(
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+           except Exception as e:
+               traceback.print_exc()
+               raise RuntimeError(
+                   "Error ingesting and embedding custom entities: "
+                   f"{e}"
+               ) from e
+
+    async def ingest_and_embed_custom_relationships(self, relationship_json, async_cooldown=60, requests_per_minute=1000) -> None:
+           self.__require_open_connection()
+           try:
+               relationship_indexer = RelationshipIndexer3(
+                   conn=self.conn,
+                   lock=self.lock,
+                   language_model=self.language_model.generate,
+                   hash_func=self.hashing_func.content_hash,
+                   embedding_model=self.embedding_model,
+                   add_embedding_func=self.add_embedding,
+               )
+               await relationship_indexer.ingest_custom_relationships_from_ingested_chunks(
+                   custom_relationships_json=relationship_json,
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+               await relationship_indexer.fix_relationships(
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+               await relationship_indexer.embed_relationships(
+                   async_cooldown=async_cooldown,
+                   requests_per_minute=requests_per_minute,
+                   verbose=self.verbose,
+               )
+           except Exception as e:
+               traceback.print_exc()
+               raise RuntimeError(
+                   "Error ingesting and embedding custom relationships: "
+                   f"{e}"
+               ) from e
+    async def construct_custom_GraphRAG(self, chunks: list[dict], graph: igraph.Graph = None,  entities: list[dict] = None, rels_json: list[dict] = None, entity_types_json: dict[str, str] = None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
                    # First, validate the provided information before we make any llm or embedding calls.
                    try: 
                        self.__graph_construction_print("STEP ONE: COLLECTING SOURCE DOCUMENTS AND VERIFYING THEIR FORMAT")
@@ -1995,6 +2126,15 @@ class DotVectorDB:
                    except Exception as e:
                         traceback.print_exc()
                         raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the entity JSON: {e}")
+                   try:
+                        self.__graph_construction_print("STEP THREE-B: VALIDATING PROVIDED ENTITY TYPE DEFINITIONS")
+                        entity_types_json = self.__verify_entity_types(
+                            entity_json,
+                            entity_types_json,
+                        )
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying entity type definitions: {e}")
                    try:
                         self.__graph_construction_print("STEP FOUR: VALIDATING PROVIDED RELATIONSHIP JSON FORMAT")
                         relationship_json = self.__verify_prebuilt_relationship_json(
@@ -2020,20 +2160,85 @@ class DotVectorDB:
                    # Second, we ingest the chunks into the database.
                    try:
                         total_chunks = []
-                        self.__graph_construction_print("STEP SIX: INGESTING THE CHUNKS INTO THE DATABASE")
+                        self.__graph_construction_print("STEP SIX: INGESTING AND EMBEDDING THE CHUNKS")
                         for chunk in tqdm_asyncio(chunk_json_list, desc=f"Adding chunks from custom chunks into the DB"):
-                            self.add_chunk(
+                            await self.add_chunk(
                                 content=chunk["content"],
                                 source_name=chunk["source_name"],
-                                model_name=self.embedding_model.embedding_model_name
+                                model_name=self.embedding_model.model_name
                             )
                             total_chunks.append(chunk)
+
+                        failed_chunks = await self.get_unprocessed_metadata("chunk")
+                        while failed_chunks:
+                            current_batch = failed_chunks[:requests_per_minute]
+                            remaining_chunks = failed_chunks[requests_per_minute:]
+
+                            async def embed_custom_chunk(chunk):
+                                try:
+                                    await self.add_embedding(
+                                        content=chunk["content"],
+                                        table="chunk",
+                                        pk_hash=chunk["chunk_id"],
+                                    )
+                                    return None
+                                except Exception as error:
+                                    if self.verbose:
+                                        print(
+                                            "Custom chunk embedding failed; "
+                                            f"retrying: {error}"
+                                        )
+                                    return chunk
+
+                            batch_results = await tqdm_asyncio.gather(
+                                *(
+                                    embed_custom_chunk(chunk)
+                                    for chunk in current_batch
+                                ),
+                                desc="Embedding custom chunks",
+                                total=len(current_batch),
+                            )
+                            failed_chunks = [
+                                chunk
+                                for chunk in batch_results
+                                if chunk is not None
+                            ]
+                            failed_chunks.extend(remaining_chunks)
+                            if failed_chunks:
+                                await asyncio.sleep(async_cooldown)
                    except Exception as e:
                         traceback.print_exc()
                         raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while adding chunks to the database: {e}")
 
                    # Third, construct the graph from the provided entity and relationship json
+                   try:
+                        self.__graph_construction_print("STEP SEVEN: INGESTING AND EMBEDDING CUSTOM ENTITIES")
+                        await self.ingest_and_embed_custom_entities(
+                            entity_json=entity_json,
+                            entity_types=entity_types_json or None,
+                            async_cooldown=async_cooldown,
+                            requests_per_minute=requests_per_minute,
+                        )
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(
+                            "Error in construct_custom_GraphRAG while ingesting "
+                            f"and embedding custom entities: {e}"
+                        ) from e
 
+                   try:
+                        self.__graph_construction_print("STEP EIGHT: INGESTING AND EMBEDDING CUSTOM RELATIONSHIPS")
+                        await self.ingest_and_embed_custom_relationships(
+                            relationship_json=relationship_json,
+                            async_cooldown=async_cooldown,
+                            requests_per_minute=requests_per_minute,
+                        )
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(
+                            "Error in construct_custom_GraphRAG while ingesting "
+                            f"and embedding custom relationships: {e}"
+                        ) from e
 
                    # Fourth, generate and save a global description for each source document.
                    try:
@@ -2059,10 +2264,596 @@ class DotVectorDB:
                    except Exception as e:
                       traceback.print_exc()
                       raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
-    async def export_DotRAG_to_LightRAG_PathRAG_Graph(self):
-        pass
-    async def export_DotRAG_to_MS_GraphRAG_Graph(self):
-        pass
+
+    ############################################################
+    #  Graph Convert Functions From DotRAG to Another          # 
+    ############################################################
+    async def export_DotRAG_to_LightRAG_PathRAG_Graph(
+        self,
+        output_file="lightrag_custom_kg.json",
+    ) -> dict[str, list[dict]]:
+        """Export DotRAG data in LightRAG/PathRAG custom-KG format.
+
+        The returned dictionary can be passed directly to LightRAG's
+        ``insert_custom_kg``/``ainsert_custom_kg`` methods. When
+        ``output_file`` is not ``None``, the same payload is also written as
+        JSON. Relationship weights are derived from the number of distinct
+        chunks supporting each relationship, matching LightRAG's evidence
+        weight semantics.
+        """
+        self.__require_open_connection()
+
+        async with self.lock:
+            chunk_cursor = await self.conn.execute(
+                """
+                SELECT chunk.chunk_id, chunk.content, chunk.source_id,
+                       source.name
+                FROM chunk
+                JOIN source ON chunk.source_id = source.id
+                ORDER BY chunk.source_id, chunk.chunk_id
+                """
+            )
+            chunk_rows = await chunk_cursor.fetchall()
+            await chunk_cursor.close()
+
+            entity_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, entity_name, entity_description
+                FROM entity
+                ORDER BY entity_id
+                """
+            )
+            entity_rows = await entity_cursor.fetchall()
+            await entity_cursor.close()
+
+            entity_type_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, entity_type
+                FROM entity_to_entity_type_mapping
+                ORDER BY entity_id, entity_type
+                """
+            )
+            entity_type_rows = await entity_type_cursor.fetchall()
+            await entity_type_cursor.close()
+
+            entity_chunk_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, chunk_id
+                FROM chunk_to_entity_mapping
+                ORDER BY entity_id, chunk_id
+                """
+            )
+            entity_chunk_rows = await entity_chunk_cursor.fetchall()
+            await entity_chunk_cursor.close()
+
+            relationship_cursor = await self.conn.execute(
+                """
+                SELECT relationship.relation_id,
+                       source_entity.entity_name,
+                       destination_entity.entity_name,
+                       relationship.relation_description,
+                       relationship.keywords
+                FROM relationship
+                JOIN entity AS source_entity
+                    ON relationship.src_entity_id = source_entity.entity_id
+                JOIN entity AS destination_entity
+                    ON relationship.dst_entity_id = destination_entity.entity_id
+                ORDER BY relationship.relation_id
+                """
+            )
+            relationship_rows = await relationship_cursor.fetchall()
+            await relationship_cursor.close()
+
+            relationship_chunk_cursor = await self.conn.execute(
+                """
+                SELECT relation_id, chunk_id
+                FROM chunk_to_relationship_mapping
+                ORDER BY relation_id, chunk_id
+                """
+            )
+            relationship_chunk_rows = (
+                await relationship_chunk_cursor.fetchall()
+            )
+            await relationship_chunk_cursor.close()
+
+        chunk_source_names = {
+            chunk_id: source_name
+            for chunk_id, _, _, source_name in chunk_rows
+        }
+
+        entity_types_by_id = {}
+        for entity_id, entity_type in entity_type_rows:
+            entity_types_by_id.setdefault(entity_id, []).append(entity_type)
+
+        entity_chunks_by_id = {}
+        for entity_id, chunk_id in entity_chunk_rows:
+            entity_chunks_by_id.setdefault(entity_id, set()).add(chunk_id)
+
+        relationship_chunks_by_id = {}
+        for relation_id, chunk_id in relationship_chunk_rows:
+            relationship_chunks_by_id.setdefault(relation_id, set()).add(
+                chunk_id
+            )
+
+        def provenance(chunk_ids):
+            ordered_chunk_ids = sorted(chunk_ids)
+            source_id = "<SEP>".join(
+                str(chunk_id) for chunk_id in ordered_chunk_ids
+            )
+            file_paths = []
+            seen_file_paths = set()
+            for chunk_id in ordered_chunk_ids:
+                file_path = chunk_source_names.get(chunk_id)
+                if file_path and file_path not in seen_file_paths:
+                    seen_file_paths.add(file_path)
+                    file_paths.append(file_path)
+            return source_id, "<SEP>".join(file_paths)
+
+        chunks = []
+        source_chunk_indexes = {}
+        for chunk_id, content, source_id, source_name in chunk_rows:
+            source_chunk_index = source_chunk_indexes.get(source_id, 0)
+            chunks.append(
+                {
+                    "content": content,
+                    "source_id": str(chunk_id),
+                    "file_path": source_name,
+                    "source_chunk_index": source_chunk_index,
+                }
+            )
+            source_chunk_indexes[source_id] = source_chunk_index + 1
+
+        entities = []
+        for entity_id, entity_name, entity_description in entity_rows:
+            source_id, file_path = provenance(
+                entity_chunks_by_id.get(entity_id, set())
+            )
+            entities.append(
+                {
+                    "entity_name": entity_name,
+                    "entity_type": ", ".join(
+                        entity_types_by_id.get(entity_id, [])
+                    ),
+                    "description": entity_description,
+                    "source_id": source_id,
+                    "file_path": file_path,
+                }
+            )
+
+        relationships = []
+        for (
+            relation_id,
+            source_entity_name,
+            destination_entity_name,
+            relation_description,
+            raw_keywords,
+        ) in relationship_rows:
+            chunk_ids = relationship_chunks_by_id.get(relation_id, set())
+            source_id, file_path = provenance(chunk_ids)
+            try:
+                keywords = json.loads(raw_keywords)
+            except (TypeError, json.JSONDecodeError):
+                keywords = raw_keywords
+            if isinstance(keywords, list):
+                keywords = ", ".join(str(keyword) for keyword in keywords)
+            elif keywords is None:
+                keywords = ""
+            else:
+                keywords = str(keywords)
+
+            relationships.append(
+                {
+                    "src_id": source_entity_name,
+                    "tgt_id": destination_entity_name,
+                    "description": relation_description,
+                    "keywords": keywords,
+                    "weight": float(len(chunk_ids)),
+                    "source_id": source_id,
+                    "file_path": file_path,
+                }
+            )
+
+        custom_kg = {
+            "chunks": chunks,
+            "entities": entities,
+            "relationships": relationships,
+        }
+
+        if output_file is not None:
+            output_path = Path(output_file).expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", encoding="utf-8") as file:
+                json.dump(custom_kg, file, ensure_ascii=False, indent=2)
+
+        return custom_kg
+
+    async def export_DotRAG_to_HopRAG_Graph(
+        self,
+        output_file="hoprag_hotpotqa.jsonl",
+    ) -> list[dict]:
+        """Export the DotRAG corpus as HopRAG-compatible HotpotQA JSONL.
+
+        HopRAG generates its own answerable and pending questions from the
+        passage text. Its HotpotQA builder uses each record's ``context`` to
+        determine which documents may be compared during edge construction.
+        This exporter therefore groups DotRAG sources into connected
+        components using their shared entities and relationships, while
+        leaving all QA ground-truth fields empty.
+        """
+        self.__require_open_connection()
+
+        async with self.lock:
+            source_cursor = await self.conn.execute(
+                """
+                SELECT id, name
+                FROM source
+                ORDER BY id
+                """
+            )
+            source_rows = await source_cursor.fetchall()
+            await source_cursor.close()
+
+            chunk_cursor = await self.conn.execute(
+                """
+                SELECT chunk_id, source_id, content
+                FROM chunk
+                ORDER BY source_id, chunk_id
+                """
+            )
+            chunk_rows = await chunk_cursor.fetchall()
+            await chunk_cursor.close()
+
+            entity_source_cursor = await self.conn.execute(
+                """
+                SELECT DISTINCT mapping.entity_id, chunk.source_id
+                FROM chunk_to_entity_mapping AS mapping
+                JOIN chunk ON mapping.chunk_id = chunk.chunk_id
+                ORDER BY mapping.entity_id, chunk.source_id
+                """
+            )
+            entity_source_rows = await entity_source_cursor.fetchall()
+            await entity_source_cursor.close()
+
+            relationship_source_cursor = await self.conn.execute(
+                """
+                SELECT DISTINCT mapping.relation_id, chunk.source_id
+                FROM chunk_to_relationship_mapping AS mapping
+                JOIN chunk ON mapping.chunk_id = chunk.chunk_id
+                ORDER BY mapping.relation_id, chunk.source_id
+                """
+            )
+            relationship_source_rows = (
+                await relationship_source_cursor.fetchall()
+            )
+            await relationship_source_cursor.close()
+
+        source_names = dict(source_rows)
+        chunks_by_source = {source_id: [] for source_id in source_names}
+        for _, source_id, content in chunk_rows:
+            chunks_by_source.setdefault(source_id, []).append(content)
+
+        parent = {source_id: source_id for source_id in source_names}
+
+        def find(source_id):
+            while parent[source_id] != source_id:
+                parent[source_id] = parent[parent[source_id]]
+                source_id = parent[source_id]
+            return source_id
+
+        def union(first_source_id, second_source_id):
+            first_root = find(first_source_id)
+            second_root = find(second_source_id)
+            if first_root != second_root:
+                parent[second_root] = first_root
+
+        def connect_sources(rows):
+            sources_by_graph_item = {}
+            for graph_item_id, source_id in rows:
+                if source_id in parent:
+                    sources_by_graph_item.setdefault(
+                        graph_item_id,
+                        [],
+                    ).append(source_id)
+            for source_ids in sources_by_graph_item.values():
+                if len(source_ids) < 2:
+                    continue
+                first_source_id = source_ids[0]
+                for source_id in source_ids[1:]:
+                    union(first_source_id, source_id)
+
+        connect_sources(entity_source_rows)
+        connect_sources(relationship_source_rows)
+
+        components = {}
+        for source_id in source_names:
+            if chunks_by_source.get(source_id):
+                components.setdefault(find(source_id), []).append(source_id)
+
+        name_counts = {}
+        for source_name in source_names.values():
+            name_counts[source_name] = name_counts.get(source_name, 0) + 1
+
+        def hoprag_document_title(source_id):
+            source_name = source_names[source_id]
+            if name_counts[source_name] == 1:
+                return source_name
+            return f"{source_name} [{source_id}]"
+
+        records = []
+        ordered_components = sorted(
+            components.values(),
+            key=lambda source_ids: tuple(str(value) for value in source_ids),
+        )
+        for component_index, source_ids in enumerate(ordered_components, 1):
+            context = [
+                [
+                    hoprag_document_title(source_id),
+                    chunks_by_source[source_id],
+                ]
+                for source_id in source_ids
+            ]
+            records.append(
+                {
+                    "_id": f"dotrag-component-{component_index}",
+                    "answer": "",
+                    "question": "",
+                    "supporting_facts": [],
+                    "context": context,
+                    "type": "dotrag",
+                    "level": "unknown",
+                }
+            )
+
+        if output_file is not None:
+            output_path = Path(output_file).expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with output_path.open("w", encoding="utf-8") as file:
+                for record in records:
+                    file.write(
+                        json.dumps(record, ensure_ascii=False) + "\n"
+                    )
+
+        return records
+
+    async def export_DotRAG_to_MS_GraphRAG_Graph(
+        self,
+        output_directory="graphrag_output",
+    ) -> dict[str, str]:
+        """Export DotRAG data as Microsoft GraphRAG BYOG Parquet tables."""
+        self.__require_open_connection()
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        output_path = Path(output_directory).expanduser().resolve()
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        async with self.lock:
+            entity_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, entity_name, entity_description, degrees
+                FROM entity
+                ORDER BY entity_id
+                """
+            )
+            entity_rows = await entity_cursor.fetchall()
+            await entity_cursor.close()
+
+            entity_type_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, entity_type
+                FROM entity_to_entity_type_mapping
+                ORDER BY entity_id, entity_type
+                """
+            )
+            entity_type_rows = await entity_type_cursor.fetchall()
+            await entity_type_cursor.close()
+
+            entity_chunk_cursor = await self.conn.execute(
+                """
+                SELECT entity_id, chunk_id
+                FROM chunk_to_entity_mapping
+                ORDER BY entity_id, chunk_id
+                """
+            )
+            entity_chunk_rows = await entity_chunk_cursor.fetchall()
+            await entity_chunk_cursor.close()
+
+            relationship_cursor = await self.conn.execute(
+                """
+                SELECT
+                    relationship.relation_id,
+                    source.entity_name,
+                    target.entity_name,
+                    relationship.relation_description,
+                    relationship.weight,
+                    source.degrees,
+                    target.degrees
+                FROM relationship
+                JOIN entity AS source
+                    ON relationship.src_entity_id = source.entity_id
+                JOIN entity AS target
+                    ON relationship.dst_entity_id = target.entity_id
+                ORDER BY relationship.relation_id
+                """
+            )
+            relationship_rows = await relationship_cursor.fetchall()
+            await relationship_cursor.close()
+
+            relationship_chunk_cursor = await self.conn.execute(
+                """
+                SELECT relation_id, chunk_id
+                FROM chunk_to_relationship_mapping
+                ORDER BY relation_id, chunk_id
+                """
+            )
+            relationship_chunk_rows = (
+                await relationship_chunk_cursor.fetchall()
+            )
+            await relationship_chunk_cursor.close()
+
+            chunk_cursor = await self.conn.execute(
+                """
+                SELECT chunk_id, content, source_id
+                FROM chunk
+                ORDER BY chunk_id
+                """
+            )
+            chunk_rows = await chunk_cursor.fetchall()
+            await chunk_cursor.close()
+
+        entity_types_by_id = {}
+        for entity_id, entity_type in entity_type_rows:
+            entity_types_by_id.setdefault(entity_id, []).append(entity_type)
+
+        entity_chunks_by_id = {}
+        chunk_entities_by_id = {}
+        for entity_id, chunk_id in entity_chunk_rows:
+            entity_chunks_by_id.setdefault(entity_id, []).append(str(chunk_id))
+            chunk_entities_by_id.setdefault(chunk_id, []).append(str(entity_id))
+
+        relationship_chunks_by_id = {}
+        chunk_relationships_by_id = {}
+        for relation_id, chunk_id in relationship_chunk_rows:
+            relationship_chunks_by_id.setdefault(relation_id, []).append(
+                str(chunk_id)
+            )
+            chunk_relationships_by_id.setdefault(chunk_id, []).append(
+                str(relation_id)
+            )
+
+        entity_records = []
+        for human_readable_id, (
+            entity_id,
+            entity_name,
+            entity_description,
+            degree,
+        ) in enumerate(entity_rows):
+            entity_types = entity_types_by_id.get(entity_id, [])
+            entity_text_unit_ids = entity_chunks_by_id.get(entity_id, [])
+            entity_records.append(
+                {
+                    "id": str(entity_id),
+                    "human_readable_id": human_readable_id,
+                    "title": entity_name,
+                    "type": ", ".join(entity_types),
+                    "description": entity_description,
+                    "text_unit_ids": entity_text_unit_ids,
+                    "frequency": len(entity_text_unit_ids),
+                    "degree": int(degree or 0),
+                }
+            )
+
+        relationship_records = []
+        for human_readable_id, (
+            relation_id,
+            source_name,
+            target_name,
+            description,
+            weight,
+            source_degree,
+            target_degree,
+        ) in enumerate(relationship_rows):
+            relationship_records.append(
+                {
+                    "id": str(relation_id),
+                    "human_readable_id": human_readable_id,
+                    "source": source_name,
+                    "target": target_name,
+                    "description": description,
+                    "weight": float(weight),
+                    "combined_degree": int(source_degree or 0)
+                    + int(target_degree or 0),
+                    "text_unit_ids": relationship_chunks_by_id.get(
+                        relation_id,
+                        [],
+                    ),
+                }
+            )
+
+        text_unit_records = []
+        for human_readable_id, (
+            chunk_id,
+            content,
+            source_id,
+        ) in enumerate(chunk_rows):
+            text_unit_records.append(
+                {
+                    "id": str(chunk_id),
+                    "human_readable_id": human_readable_id,
+                    "text": content,
+                    "n_tokens": len(self.embedding_model.tokenize(content)),
+                    "document_id": str(source_id),
+                    "entity_ids": chunk_entities_by_id.get(chunk_id, []),
+                    "relationship_ids": chunk_relationships_by_id.get(
+                        chunk_id,
+                        [],
+                    ),
+                    "covariate_ids": [],
+                }
+            )
+
+        entity_schema = pa.schema(
+            [
+                ("id", pa.string()),
+                ("human_readable_id", pa.int64()),
+                ("title", pa.string()),
+                ("type", pa.string()),
+                ("description", pa.string()),
+                ("text_unit_ids", pa.list_(pa.string())),
+                ("frequency", pa.int64()),
+                ("degree", pa.int64()),
+            ]
+        )
+        relationship_schema = pa.schema(
+            [
+                ("id", pa.string()),
+                ("human_readable_id", pa.int64()),
+                ("source", pa.string()),
+                ("target", pa.string()),
+                ("description", pa.string()),
+                ("weight", pa.float64()),
+                ("combined_degree", pa.int64()),
+                ("text_unit_ids", pa.list_(pa.string())),
+            ]
+        )
+        text_unit_schema = pa.schema(
+            [
+                ("id", pa.string()),
+                ("human_readable_id", pa.int64()),
+                ("text", pa.string()),
+                ("n_tokens", pa.int64()),
+                ("document_id", pa.string()),
+                ("entity_ids", pa.list_(pa.string())),
+                ("relationship_ids", pa.list_(pa.string())),
+                ("covariate_ids", pa.list_(pa.string())),
+            ]
+        )
+
+        output_files = {
+            "entities": output_path / "entities.parquet",
+            "relationships": output_path / "relationships.parquet",
+            "text_units": output_path / "text_units.parquet",
+        }
+        pq.write_table(
+            pa.Table.from_pylist(entity_records, schema=entity_schema),
+            output_files["entities"],
+        )
+        pq.write_table(
+            pa.Table.from_pylist(
+                relationship_records,
+                schema=relationship_schema,
+            ),
+            output_files["relationships"],
+        )
+        pq.write_table(
+            pa.Table.from_pylist(text_unit_records, schema=text_unit_schema),
+            output_files["text_units"],
+        )
+
+        return {
+            table_name: str(file_path)
+            for table_name, file_path in output_files.items()
+        }
     ############################################################
     #   Functions For Visualuzing DotVDB's Graphs              # 
     ############################################################

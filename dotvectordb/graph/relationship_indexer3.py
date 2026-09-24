@@ -536,6 +536,13 @@ class RelationshipIndexer:
                             relation_id_hash,
                         )
                         )
+                    await self.conn.execute(
+                        """
+                        INSERT OR IGNORE INTO chunk_to_relationship_mapping
+                        (chunk_id, relation_id) VALUES (?, ?)
+                        """,
+                        (chunk_hash, relation_id_hash),
+                    )
                 await self.conn.execute("UPDATE chunk SET are_relations_extracted = 1 WHERE chunk_id = ?", (chunk_hash,))
                 await self.save_input_and_output_tokens_for_llm(response[1])
                 await self.conn.commit()
@@ -1113,6 +1120,14 @@ class RelationshipIndexer:
                                 relationship["relation_id"],
                             ),
                         )
+
+                    await self.conn.execute(
+                        """
+                        INSERT OR IGNORE INTO chunk_to_relationship_mapping
+                        (chunk_id, relation_id) VALUES (?, ?)
+                        """,
+                        (chunk_id, relationship["relation_id"]),
+                    )
 
                 for llm_tokens in llm_token_totals:
                     await self.save_input_and_output_tokens_for_llm(llm_tokens)

@@ -34,6 +34,18 @@ CREATE TABLE IF NOT EXISTS relationship (
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
 );
 
+/*********************************
+----> Chunk to relationship mapping <----
+Purpose: Associates each relationship with the chunks where it was found.
+*********************************/
+CREATE TABLE IF NOT EXISTS chunk_to_relationship_mapping (
+    chunk_id INTEGER NOT NULL,
+    relation_id INTEGER NOT NULL,
+    PRIMARY KEY (chunk_id, relation_id),
+    FOREIGN KEY (chunk_id) REFERENCES chunk(chunk_id) ON DELETE CASCADE,
+    FOREIGN KEY (relation_id) REFERENCES relationship(relation_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS temp_relationship (
     temp_relation_id INTEGER NOT NULL,
     src_temp_entity_id INTEGER NOT NULL,
