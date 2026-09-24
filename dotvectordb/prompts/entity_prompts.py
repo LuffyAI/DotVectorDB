@@ -1,22 +1,70 @@
 """
 Author: Larnell Moore
 Purpose: This file contains the prompt templates for extracting entities from each text chunk in the database. The prompts are designed to guide the LLM during this extraction during graph construction. 
+Notes: Some prompt templates were inspired/derived from the LightRAG project
 """
 from typing import Any, Dict, List, Tuple, Optional
-from pydantic import BaseModel, Field
-
-class Psuedoquery(BaseModel):
-    Questions: List[str]
-
+from pydantic import BaseModel, Field, create_model
+######################################
+# Entity Extraction Prompt Model     #
+######################################
 class Entity(BaseModel):
     entity_name: str
     entity_groups: List[int]
     entity_description: str
     entity_questions: List[str]
-
 class ExtractedEntitiesResponse(BaseModel):
     entities: List[Entity]
+########################################
+# Entity Summarization Prompt Model    #
+########################################
+class EntitySummarizer(BaseModel):
+    new_description: str
+###########################################
+# Custom Entity Enrichment Prompt Model   #
+###########################################
+async def create_entity_enrichment_model(
+    needs_descriptions: bool,
+    needs_questions: bool,
+    needs_types: bool,
+) -> type[BaseModel]:
+    """
+    Dynamically creates a Pydantic model for entity enrichment based on the specified needs.
 
+    Args:
+        needs_descriptions (bool): Whether entity descriptions are needed.
+        needs_questions (bool): Whether entity questions are needed.
+        needs_types (bool): Whether entity types are needed.
+
+    Returns:
+        BaseModel: A dynamically created Pydantic model for entity enrichment.
+    """
+    fields: Dict[str, Tuple[Any, Any]] = {
+        "local_entity_id": (
+            int,
+            Field(
+                ...,
+                description=(
+                    "The temporary integer ID supplied for this entity. "
+                    "Return it unchanged."
+                ),
+            ),
+        )
+    }
+    if needs_descriptions:
+        fields['entity_description'] = (str, Field(..., description="A concise yet comprehensive description of the entity's attributes and activities."))
+    if needs_questions:
+        fields['entity_questions'] = (List[str], Field(..., description="A list of questions that could be asked and answered about the entity."))
+    if needs_types:
+        fields['entity_groups'] = (List[int], Field(..., description="A list of integers representing the types or categories the entity belongs to."))
+    entity_model = create_model("EntityEnrichmentItem", **fields)
+    return create_model(
+        "EntityEnrichmentResponse",
+        entities=(List[entity_model], Field(...)),
+    )
+###########################################
+# Entity Prompt Graph Helper Functions    #
+###########################################
 async def isEntityTypesFormatCorrect(entity_types):
     """
     Validates the format of the entity_types dictionary.
@@ -35,6 +83,51 @@ async def isEntityTypesFormatCorrect(entity_types):
             return False
     return True 
 
+async def prepare_entity_enrichment_prompt_sections(
+    needs_descriptions: bool,
+    needs_questions: bool,
+    needs_types: bool,
+) -> Tuple[str, type[BaseModel]]:
+    """
+    Prepares the sections for the entity enrichment prompt based on the specified needs.
+
+    Args:
+        needs_descriptions (bool): Whether entity descriptions are needed.
+        needs_questions (bool): Whether entity questions are needed.
+        needs_types (bool): Whether entity types are needed.
+
+    Returns:
+        Tuple[str, type[BaseModel]]: The assembled enrichment prompt and the
+        matching Pydantic response model.
+    """
+    requested_sections = []
+    if needs_descriptions:
+        requested_sections.append(ENTITY_ENRICHMENT_DESCRIPTION_SECTION)
+    if needs_questions:
+        requested_sections.append(ENTITY_ENRICHMENT_QUESTIONS_SECTION)
+    if needs_types:
+        requested_sections.append(ENTITY_ENRICHMENT_ENTITY_TYPES_SECTION)
+
+    if not requested_sections:
+        raise ValueError("At least one entity enrichment field must be requested.")
+
+    numbered_sections = [
+        section.format(task_number=task_number)
+        for task_number, section in enumerate(requested_sections, start=1)
+    ]
+    enrichment_prompt = "\n".join(
+        [ENTITY_ENRICHMENT_HEADER_SECTION, *numbered_sections, ENTITY_ENRICHMENT_FOOTER_SECTION]
+    )
+    enrichment_model = await create_entity_enrichment_model(
+        needs_descriptions=needs_descriptions,
+        needs_questions=needs_questions,
+        needs_types=needs_types,
+    )
+
+    return enrichment_prompt, enrichment_model
+###########################################
+# Entity Prompt Templates                 #
+###########################################
 ENTITY_RECOGNITION_PROMPT = """
 <Role>
 You are a Knowledge Graph Specialist responsible for extracting meaningful named entities from the `<Input>` section and then assigning each entity one or more types from the `<Entity_Type>` section.
@@ -42,19 +135,18 @@ You are a Knowledge Graph Specialist responsible for extracting meaningful named
 
 <Instructions>
 **Named Entity Extraction:**
-   - Entity discovery and entity grouping are separate decisions. First identify all meaningful entities in the input without using the available entity types to restrict extraction. After an entity has been identified, assign it one or more entity types. If none of the specific entity types apply, assign `other`. Never omit an otherwise meaningful entity because its type is uncertain or because it does not fit a specific type.
+   - Entity discovery and entity grouping are separate decisions. First, identify all meaningful entities in the input without using the available entity types to restrict extraction. After identifying an entity, assign it one or more entity types. If none of the specific entity types apply, assign `other`. Never omit an otherwise meaningful entity because its type is uncertain or because it does not fit a specific type.
    - Carefully read the '<Entity_Type>' section only after discovering the entities so you can group them correctly. Do not invent any entity types.
-   - Identify all clearly defined and meaningful entities in the `<Input>` section. Extract as many as you can. Each entity can belong to any number of entity types, and you can use a combination of types to make up for the limited number of types. Do not extract the same entity multiple times. Ensure that the extracted entities are **unique** and **relevant** to the context of the input text.
+   - Identify all clearly defined and meaningful entities in the `<Input>` section. Extract as many as you can. Each entity can belong to multiple entity types, and you can combine types to make up for the limited number of types. Do not extract the same entity multiple times. Ensure that the extracted entities are **unique** and **relevant** to the context of the input text.
     - For each entity, extract:
         - `entity_name`: The exact name of the entity. Ensure **consistent naming** across the entire extraction process.
-        - 'entity_type': Categorize the entity using the type guidance provided in the `<Entity_Type>` section. Use any numbers of types needed to fully describe the entity. Additionally, use the number associated with the type. 
+        - 'entity_type': Categorize the entity using the type guidance provided in the `<Entity_Type>` section. Use any number of types needed to describe the entity fully. Also include the number associated with each type. 
         - 'entity_description': Provide a concise yet comprehensive description of the entity's attributes and activities, based *solely* on the information present in the input text.
-        - 'entity_questions': Generate a list of at least one question that could be asked and answered about the entity based on the information in the input text. The question should be relevant to the entity and its context within the input text. Do not include questions that are not already answerable based on the information in the input text.
-    - Look at the `<Examples>` section for examples of how to extract entities. Use these examples as a guide for your extraction process.
-
-**Language & Style:**
-   - Ensure all entity names and descriptions are written in the **third person**. 
-</Instructions>
+        - 'entity_questions': Generate a list of at least one question you would reasonably expect a user to ask that is answerable about the entity based on the information in the input text. The question should be relevant to the entity and its context within the input text. Do not include questions that are not already answerable based on the information in the input text.
+    - Look at the `<Examples>` section for examples of how to extract entities. Use these examples to guide your extraction process.
+Language & Style:
+* Write all entity names and descriptions in the third person.
+* Write all text in the following language: {language}. If a proper, widely accepted translation is not available or would cause ambiguity, retain proper nouns (e.g., personal names, place names, organization names) in their original language.
 
 <Entity_Types>
 {entity_types}
@@ -72,18 +164,95 @@ You are a Knowledge Graph Specialist responsible for extracting meaningful named
 <Output_Example>
 {output_example}
 </Output_Example>
-</Examples>
 """
 
-ALLOWED_ENTITY_TYPE_PAIRS = {
-    frozenset(("currency", "tech")),
-    frozenset(("currency", "concept")),
-    frozenset(("tech", "concept")),
-    frozenset(("tech", "language")),
-    frozenset(("SCHOLARLY_WORK", "tech")),
-    frozenset(("language", "concept")),
-}
+ENTITY_SUMMARIZATION_PROMPT = """
+You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
 
+---Task---
+Your task is to synthesize a list of descriptions of a given entity into a single, comprehensive, and cohesive summary.
+
+---Instructions---
+1. Input Format: The description list is provided in JSON format. Each JSON object (representing a single description) appears on a new line within the `Description List` section.
+2. Output Format: The merged description will be returned as plain text, presented in multiple paragraphs, without any additional formatting or extraneous comments before or after the summary.
+3. Comprehensiveness: The summary must integrate all key information from *every* provided description. Do not omit any important facts or details.
+4. Context: Ensure the summary is written from an objective, third-person perspective; explicitly mention the name of the entity for full clarity and context.
+5. Context & Objectivity:
+  - Write the summary from an objective, third-person perspective.
+  - Explicitly mention the full name of the entity at the beginning of the summary to ensure immediate clarity and context.
+6. Conflict Handling:
+  - In cases of conflicting or inconsistent descriptions, first determine if these conflicts arise from multiple, distinct entities that share the same name.
+  - If distinct entities are identified, summarize each one *separately* within the overall output.
+  - If conflicts within a single entity (e.g., historical discrepancies) exist, attempt to reconcile them or present both viewpoints with noted uncertainty.
+7. Length Constraint: The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
+8. Language: The entire output must be written in {language}. Proper nouns (e.g., personal names, place names, organization names) should be retained in their original language if a proper, widely accepted translation is not available or would cause ambiguity.
+
+---Input---
+{description_type} Name: {description_name}
+
+Description List:
+{description_list}
+"""
+
+# If a custom knowledge graph is being used and the user did not provide a description for one or more of the following, the required values will be filled in by the language model.
+ENTITY_ENRICHMENT_HEADER_SECTION = """
+<Role>
+You are a Knowledge Graph Specialist responsible for carefully reading the information in the `<Input>` and enriching each of the specified entities in the '<Entities>' section by completing the following tasks:
+</Role>
+
+<Tasks>
+For every entity, return its supplied `local_entity_id` unchanged so the
+generated information can be matched to the correct entity. Return exactly
+one result for every supplied entity; do not omit or duplicate entities.
+"""
+ENTITY_ENRICHMENT_DESCRIPTION_SECTION= """ 
+**Task {task_number} - Entity Description Generation:**
+- Carefully read the `<Input>` section to understand the context of the entities listed in the '<Entities>' section.
+- For each entity, generate a concise yet comprehensive description of the entity's attributes and activities based solely on the information present in the `<Input>` section. The description should be written in the third person and should not include any information that is not explicitly stated in the `<Input>` section. Never omit any of the specified entities from your response. 
+"""
+ENTITY_ENRICHMENT_QUESTIONS_SECTION= """ 
+**Task {task_number} - Entity Question Generation:**
+- Generate a list of at least one question you would reasonably expect a user to ask that is answerable about the entity based on the information in the '<Input>' section. The question should be relevant to the entity and its context within the '<Input>' section. Do not include questions that are not already answerable based on the information in the '<Input>' section.
+"""
+
+ENTITY_ENRICHMENT_ENTITY_TYPES_SECTION = """
+**Task {task_number} - Entity Type Assignment:**
+ - For each entity, assign one or more types from the '<Entity_Types>' section. If none of the specific entity types apply, assign `other`.
+ """
+
+ENTITY_ENRICHMENT_FOOTER_SECTION = """
+</Tasks>
+- Look at the `<Examples>` section for reference. Use these examples as guidance.
+Language & Style:
+* Write all entity names and descriptions in the third person.
+* Write all text in the following language: {language}. If a proper, widely accepted translation is not available or would cause ambiguity, retain proper nouns (e.g., personal names, place names, organization names) in their original language.
+
+<Entity_Types>
+{entity_types}
+</Entity_Types>
+
+<Input>
+{chunk}
+</Input>
+
+<Entities>
+{entities}
+</Entities>
+
+<Examples>
+<Input_Example>
+{input_example}
+</Input_Example>
+
+<Output_Example>
+{output_example}
+</Output_Example>
+"""
+
+
+###########################################
+# Entity Prompt Defaults & Constants      #
+###########################################
 DEFAULT_ENTITY_TYPES = {
     "individual": "A named individual being, fictional or non-fictional, including humans, animals, creatures, monsters, and aliens, regardless of whether they are alive, deceased, historical, or imaginary.",
     "organization": "A group or institution of fictional or non-fictional people.",

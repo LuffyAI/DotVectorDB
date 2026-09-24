@@ -1,4 +1,4 @@
-from dotvectordb.prompts.relationship_prompts import RELATIONSHIP_PROMPT, ENTITY_EXAMPLE, INPUT_EXAMPLE, OUTPUT_EXAMPLE, Relationship
+from dotvectordb.prompts.relationship_prompts import RELATIONSHIP_PROMPT, ENTITY_EXAMPLE, INPUT_EXAMPLE, OUTPUT_EXAMPLE, Relationships
 import json
 import traceback
 import asyncio
@@ -135,7 +135,7 @@ class RelationshipIndexer:
 
         # We call the language model with the filled prompt and expect a response in the format of ExtractedEntitiesResponse.
         try:
-          response = await self.language_model(RELATIONSHIP_PROMPT_FILLED, structuredInput=Relationship)
+          response = await self.language_model(RELATIONSHIP_PROMPT_FILLED, structuredInput=Relationships)
         except Exception as e:
            print(f"Error extracting relationships: {e}")
            return 0

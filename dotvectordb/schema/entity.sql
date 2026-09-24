@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS entity (
     degrees INTEGER DEFAULT 0,
     embedding_model_id TEXT NOT NULL,
     is_embedded BOOLEAN DEFAULT FALSE,
-    is_deduplicated BOOLEAN DEFAULT FALSE,
+    is_summarized BOOLEAN DEFAULT TRUE,
     tokens INT NOT NULL,
     PRIMARY KEY (entity_id),
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE

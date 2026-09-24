@@ -30,6 +30,7 @@ import asyncio
 import traceback
 import tiktoken
 import warnings
+import re
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
     def __init__(self, path: str, 
@@ -1340,6 +1341,17 @@ class DotVectorDB:
     ############################################################
     #   Functions For Pre-Determined Graph Construction        # 
     ############################################################
+    @staticmethod
+    def __does_entity_name_overlap_chunk(
+        entity_name: str,
+        chunk_content: str,
+    ) -> tuple[bool, list[str]]:
+        """Require every normalized entity-name token to occur in the chunk."""
+        entity_tokens = set(re.findall(r"\w+", entity_name.casefold()))
+        chunk_tokens = set(re.findall(r"\w+", chunk_content.casefold()))
+        missing_tokens = sorted(entity_tokens - chunk_tokens)
+        return bool(entity_tokens) and not missing_tokens, missing_tokens
+
     def __verify_source_json(self, source_json: list[dict]) -> dict[str, str]:
             """
             Expected Schema for the source:
@@ -1471,6 +1483,7 @@ class DotVectorDB:
     def __verify_prebuilt_entity_json(
             self,
             local_chunks_to_new_chunks_ids: dict[str, str],
+            chunk_json: list[dict],
             entity_json: list[dict]
         ) -> tuple[dict, list[dict]]:
             """
@@ -1493,8 +1506,14 @@ class DotVectorDB:
                 raise TypeError(
                     "local_chunks_to_new_chunks_ids must be a dictionary."
                 )
+            if not isinstance(chunk_json, list):
+                raise TypeError("Chunk JSON must be a list of chunk objects.")
             if not isinstance(entity_json, list):
                 raise TypeError("Entity JSON must be a list of entity objects.")
+            chunk_content_by_id = {
+                chunk["chunk_id"]: chunk["content"]
+                for chunk in chunk_json
+            }
             local_entity_ids_to_new_entity_ids = {}
             seen_local_entity_ids = set()
             prepared_entities = []
@@ -1551,6 +1570,20 @@ class DotVectorDB:
                 if not normalized_entity_name:
                     raise ValueError(
                         f"'entity_name' for entity '{local_entity_id}' cannot be empty."
+                    )
+
+                name_matches_chunk, missing_name_tokens = (
+                    self.__does_entity_name_overlap_chunk(
+                        normalized_entity_name,
+                        chunk_content_by_id[new_chunk_id],
+                    )
+                )
+                if not name_matches_chunk:
+                    raise ValueError(
+                        f"Entity '{local_entity_id}' claims entity_name "
+                        f"'{entity_name}', but that name is not present in "
+                        f"chunk '{local_chunk_id}'. Missing normalized token(s): "
+                        f"{missing_name_tokens}."
                     )
     
                 entity_description = entity.get("entity_description", "")
@@ -1641,7 +1674,10 @@ class DotVectorDB:
             return local_entity_ids_to_new_entity_ids, entity_json
     def __verify_prebuilt_relationship_json(
             self,
+            old_chunk_id_to_new_chunk_id: dict[str, str],
             old_entity_id_to_new_entity_id: dict[str, str],
+            chunk_json: list[dict],
+            entity_json: list[dict],
             relationship_json: list[dict]
         ) -> list[dict]:
             """
@@ -1649,6 +1685,7 @@ class DotVectorDB:
             Expected Schema for each relationship in the list:
             [
                 {
+                    "chunk_id": "Unique identifier for the associated chunk.",
                     "src_entity_id": "Unique identifier for the entity.",
                     "dst_entity_id": "Unique identifier for the related entity.",
                     "relation_description": "The description of the entity.",
@@ -1658,17 +1695,33 @@ class DotVectorDB:
                 }
             ]
     
-            Only the source and destination entity IDs are required. Optional
-            metadata is defaulted and marked for later enrichment when absent.
+            The chunk ID and source and destination entity IDs are required.
+            Optional metadata is defaulted and marked for later enrichment.
             """
+            if not isinstance(old_chunk_id_to_new_chunk_id, dict):
+                raise TypeError(
+                    "old_chunk_id_to_new_chunk_id must be a dictionary."
+                )
             if not isinstance(old_entity_id_to_new_entity_id, dict):
                 raise TypeError(
                     "old_entity_id_to_new_entity_id must be a dictionary."
                 )
+            if not isinstance(chunk_json, list):
+                raise TypeError("Chunk JSON must be a list of chunk objects.")
+            if not isinstance(entity_json, list):
+                raise TypeError("Entity JSON must be a list of entity objects.")
             if not isinstance(relationship_json, list):
                 raise TypeError(
                     "Relationship JSON must be a list of relationship objects."
                 )
+            chunk_content_by_id = {
+                chunk["chunk_id"]: chunk["content"]
+                for chunk in chunk_json
+            }
+            entity_name_by_id = {
+                entity["entity_id"]: entity["entity_name"]
+                for entity in entity_json
+            }
     
             prepared_relationships = []
     
@@ -1682,7 +1735,7 @@ class DotVectorDB:
     
                 missing_keys = [
                     key
-                    for key in ("src_entity_id", "dst_entity_id")
+                    for key in ("chunk_id", "src_entity_id", "dst_entity_id")
                     if key not in relationship
                 ]
                 if missing_keys:
@@ -1691,6 +1744,20 @@ class DotVectorDB:
                         f"key(s): {', '.join(missing_keys)}."
                     )
     
+                old_chunk_id = relationship["chunk_id"]
+                try:
+                    new_chunk_id = old_chunk_id_to_new_chunk_id[old_chunk_id]
+                except TypeError as exc:
+                    raise TypeError(
+                        f"'chunk_id' for relationship at index {index} must "
+                        "be hashable."
+                    ) from exc
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Relationship at index {index} references unknown "
+                        f"chunk_id '{old_chunk_id}'."
+                    ) from exc
+
                 old_src_entity_id = relationship["src_entity_id"]
                 old_dst_entity_id = relationship["dst_entity_id"]
                 try:
@@ -1722,6 +1789,33 @@ class DotVectorDB:
                         f"Relationship at index {index} references unknown "
                         f"dst_entity_id '{old_dst_entity_id}'."
                     ) from exc
+
+                for endpoint_label, endpoint_id, endpoint_name in (
+                    (
+                        "src_entity_id",
+                        old_src_entity_id,
+                        entity_name_by_id[new_src_entity_id],
+                    ),
+                    (
+                        "dst_entity_id",
+                        old_dst_entity_id,
+                        entity_name_by_id[new_dst_entity_id],
+                    ),
+                ):
+                    name_matches_chunk, missing_name_tokens = (
+                        self.__does_entity_name_overlap_chunk(
+                            endpoint_name,
+                            chunk_content_by_id[new_chunk_id],
+                        )
+                    )
+                    if not name_matches_chunk:
+                        raise ValueError(
+                            f"Relationship at index {index} references "
+                            f"{endpoint_label} '{endpoint_id}' with entity_name "
+                            f"'{endpoint_name}', but that name is not present in "
+                            f"chunk '{old_chunk_id}'. Missing normalized "
+                            f"token(s): {missing_name_tokens}."
+                        )
     
                 relation_description = relationship.get("relation_description", "")
                 if relation_description is None:
@@ -1773,6 +1867,7 @@ class DotVectorDB:
                     (
                         relationship,
                         relation_id,
+                        new_chunk_id,
                         new_src_entity_id,
                         new_dst_entity_id,
                         relation_description,
@@ -1785,6 +1880,7 @@ class DotVectorDB:
             for (
                 relationship,
                 relation_id,
+                new_chunk_id,
                 new_src_entity_id,
                 new_dst_entity_id,
                 relation_description,
@@ -1793,6 +1889,7 @@ class DotVectorDB:
                 questions,
             ) in prepared_relationships:
                 relationship["relation_id"] = relation_id
+                relationship["chunk_id"] = new_chunk_id
                 relationship["src_entity_id"] = new_src_entity_id
                 relationship["dst_entity_id"] = new_dst_entity_id
                 relationship["relation_description"] = relation_description
@@ -1870,6 +1967,10 @@ class DotVectorDB:
             },
         )
         return graph
+    async def ingest_and_embed_custom_entities(self, entity_json, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
+           pass
+    async def ingest_and_embed_custom_relationships(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
+           pass
     async def construct_custom_GraphRAG(self, chunks: list[dict], graph: igraph.Graph = None,  entities: list[dict] = None, rels_json: list[dict] = None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
                    # First, validate the provided information before we make any llm or embedding calls.
                    try: 
@@ -1886,13 +1987,23 @@ class DotVectorDB:
                         raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the chunk JSON: {e}")
                    try: 
                         self.__graph_construction_print("STEP THREE: VALIDATING PROVIDED ENTITY JSON FORMAT")
-                        local_entity_ids_to_new_entity_ids, entity_json = self.__verify_prebuilt_entity_json(old_chunk_ids_to_new_chunk_ids, entities)
+                        local_entity_ids_to_new_entity_ids, entity_json = self.__verify_prebuilt_entity_json(
+                            old_chunk_ids_to_new_chunk_ids,
+                            chunk_json_list,
+                            entities,
+                        )
                    except Exception as e:
                         traceback.print_exc()
                         raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the entity JSON: {e}")
                    try:
                         self.__graph_construction_print("STEP FOUR: VALIDATING PROVIDED RELATIONSHIP JSON FORMAT")
-                        relationship_json = self.__verify_prebuilt_relationship_json(local_entity_ids_to_new_entity_ids, rels_json)
+                        relationship_json = self.__verify_prebuilt_relationship_json(
+                            old_chunk_ids_to_new_chunk_ids,
+                            local_entity_ids_to_new_entity_ids,
+                            chunk_json_list,
+                            entity_json,
+                            rels_json,
+                        )
                    except Exception as e:
                           traceback.print_exc()
                           raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while verifying the relationship JSON: {e}")
@@ -1921,16 +2032,33 @@ class DotVectorDB:
                         traceback.print_exc()
                         raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while adding chunks to the database: {e}")
 
-                    # Third, we check if the LLM needs to fill in any missing entity values: descriptions, entity types, or questions.
+                   # Third, construct the graph from the provided entity and relationship json
+
+
+                   # Fourth, generate and save a global description for each source document.
+                   try:
+                      self.__graph_construction_print("STEP FOUR: Generating a Global Description for the entity-relationship graph")
+                      await self.generate_global_descriptions(debug_mode=debug_mode)
+                   except Exception as e:
+                      traceback.print_exc()
+                      raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
                     
-
-                    # Fourth, we check if the LLM needs to fill in any missing relationship values: descriptions, keywords, or questions.
-
-                    # Fifth, both GraphRAG & LightRAG require weights for relationships. We can compute this once entities and relations are stored in the database.
-                             
-                    # Sixth, for DotRAG, we generate the global description of the graph.
-
-                    # Finally, we create the embeddings for the chunks, entities, and relationships, and store them in the database.
+                   # Fifth, we need to generate the graph representation of the database.
+                   try:
+                     self.__graph_construction_print("STEP FIVE: Creating the Graph Representation of the Database")
+                     await self.graph_retriever.load_graph()
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(f"Error in the construct_custom_GraphRAG function inside DotVectorDB while clustering entities: {e}")
+                   # Lastly, we construct the BM25 index
+                   try:
+                      self.__graph_construction_print("STEP SIX: Creating the BM25 Index")
+                      await self.create_BM25_index_for_table("chunk")
+                      await self.create_BM25_index_for_table("entity")
+                      await self.create_BM25_index_for_table("relationship")  
+                   except Exception as e:
+                      traceback.print_exc()
+                      raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
     async def export_DotRAG_to_LightRAG_PathRAG_Graph(self):
         pass
     async def export_DotRAG_to_MS_GraphRAG_Graph(self):
