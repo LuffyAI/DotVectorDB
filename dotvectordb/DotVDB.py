@@ -2720,14 +2720,14 @@ class DotVectorDB:
 
     async def export_DotRAG_to_MS_GraphRAG_Graph(
         self,
-        output_directory="graphrag_output",
+        output_file="graphrag_output",
     ) -> dict[str, str]:
         """Export DotRAG data as Microsoft GraphRAG BYOG Parquet tables."""
         self.__require_open_connection()
         import pyarrow as pa
         import pyarrow.parquet as pq
 
-        output_path = Path(output_directory).expanduser().resolve()
+        output_path = Path(output_file).expanduser().resolve()
         output_path.mkdir(parents=True, exist_ok=True)
 
         async with self.lock:
