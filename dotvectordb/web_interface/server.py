@@ -396,9 +396,28 @@ class GraphInterfaceServer:
         html_path = Path(__file__).with_name("index.html")
         return web.FileResponse(html_path)
 
+    async def _michigan_logo(self, request):
+        return web.FileResponse(
+            Path(__file__).parent.parent
+            / "sql_browser"
+            / "university-of-michigan-vector-logo.svg"
+        )
+
+    async def _michigan_logo_white(self, request):
+        return web.FileResponse(
+            Path(__file__).parent.parent
+            / "sql_browser"
+            / "university-of-michigan-vector-logo-white.svg"
+        )
+
     async def start(self, open_browser=True):
         app = web.Application()
         app.router.add_get("/", self._index)
+        app.router.add_get("/assets/michigan-logo.svg", self._michigan_logo)
+        app.router.add_get(
+            "/assets/michigan-logo-white.svg",
+            self._michigan_logo_white,
+        )
         app.router.add_get("/api/status", self._status)
         app.router.add_get("/api/graph", self._graph_data)
         app.router.add_get("/api/neighbors/{entity_id}", self._neighbors)

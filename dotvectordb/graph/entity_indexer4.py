@@ -89,6 +89,36 @@ class EntityIndexer4:
             """,
             ("entity", total_tokens),
         )
+
+    async def log_failure(
+        self,
+        phase,
+        item_type,
+        item_id,
+        error,
+        lock_held=False,
+    ):
+        """Persist a processing failure without masking the original error."""
+        async def insert_failure():
+            await self.conn.execute(
+                """
+                INSERT INTO failure_log (
+                    phase, item_type, item_id, error_message
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (phase, item_type, str(item_id), str(error)),
+            )
+            await self.conn.commit()
+
+        try:
+            if lock_held:
+                await insert_failure()
+            else:
+                async with self.lock:
+                    await insert_failure()
+        except Exception as logging_error:
+            traceback.print_exc()
+            print(f"Unable to save failure log: {logging_error}")
     async def remove_extra_questions_from_entity(self, questions, threshold=0.7):
             """Deduplicate queries based on cosine similarity of their embeddings."""
             embeddings = self.small_llm.encode(questions)
@@ -300,8 +330,15 @@ class EntityIndexer4:
                 chunk=chunk,
                 input_example=INPUT_EXAMPLE,
                 output_example=OUTPUT_EXAMPLE,
+                language=self.summary_language,
             )
         except Exception as error:
+            await self.log_failure(
+                "entity",
+                "chunk",
+                locals().get("chunk_hash", "unknown"),
+                error,
+            )
             traceback.print_exc()
             raise RuntimeError(f"Error preparing entity recognition prompt: {error}")
 
@@ -311,6 +348,12 @@ class EntityIndexer4:
                 structuredInput=ExtractedEntitiesResponse,
             )
         except Exception as error:
+            await self.log_failure(
+                "entity",
+                "chunk",
+                chunk_hash,
+                error,
+            )
             traceback.print_exc()
             print(f"Error extracting entities: {error}")
             return 0
@@ -441,6 +484,13 @@ class EntityIndexer4:
                 return new_entities_added
             except Exception as error:
                 await self.conn.rollback()
+                await self.log_failure(
+                    "entity",
+                    "chunk",
+                    chunk_hash,
+                    error,
+                    lock_held=True,
+                )
                 traceback.print_exc()
                 print(f"Error saving extracted entities to database: {error}")
                 return 0
@@ -585,6 +635,12 @@ class EntityIndexer4:
                     await self.conn.commit()
                 return None
             except Exception as error:
+                await self.log_failure(
+                    "desc",
+                    "entity",
+                    entity.get("entity_id", "unknown"),
+                    error,
+                )
                 if verbose:
                     print(
                         f"Summarization failed for entity "
@@ -652,6 +708,12 @@ class EntityIndexer4:
                 )
                 return None
             except Exception as error:
+                await self.log_failure(
+                    "entity",
+                    "entity",
+                    entity.get("entity_id", "unknown"),
+                    error,
+                )
                 if verbose:
                     print(f"Embedding failed, retrying next batch: {error}")
                 traceback.print_exc()
@@ -1012,6 +1074,15 @@ class EntityIndexer4:
                     *(ingest_chunk(chunk) for chunk in batch),
                     return_exceptions=True,
                 )
+
+                for chunk, result in zip(batch, results):
+                    if isinstance(result, Exception):
+                        await self.log_failure(
+                            "entity",
+                            "chunk",
+                            self.hash_func(chunk[0]),
+                            result,
+                        )
 
                 for result in results:
                     if not isinstance(result, Exception):

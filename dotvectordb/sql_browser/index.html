@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DotVectorDB SQL Browser</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #07131b; color: #edf7fb; }
+    header { height: 66px; display: flex; align-items: center; gap: 14px; padding: 0 18px; border-bottom: 1px solid #19313e; background: #0a1b25; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg,#00b7c7,#63d8a5); color: #06202a; font-weight: 900; }
+    h1 { margin: 0; font-size: 17px; }
+    .university { display: none; font-family: Georgia,serif; font-weight: 700; letter-spacing: .025em; text-transform: uppercase; }
+    .university-logo { display: none; width: 285px; height: 42px; object-fit: contain; object-position: left center; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { padding: 7px 9px; border-radius: 7px; color: #8ca5ae; text-decoration: none; font-size: 12px; }
+    .nav a:hover, .nav a.active { color: #eaffff; background: #12303b; }
+    .theme-select { padding: 8px; border: 1px solid #284957; border-radius: 8px; color: inherit; background: #061018; }
+    #database { color: #8996af; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #search { margin-left: auto; width: min(420px,38vw); padding: 10px 13px; border: 1px solid #284957; border-radius: 8px; background: #061018; color: #edf7fb; outline: none; }
+    #search:focus { border-color: #00b7c7; box-shadow: 0 0 0 2px #00b7c72b; }
+    .badge { margin-left: auto; padding: 5px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #183b2b; color: #70e0a5; }
+    .badge.write { background: #4a261b; color: #ffb08f; }
+    main { display: grid; grid-template-columns: 250px minmax(0, 1fr); height: calc(100vh - 66px); }
+    aside { overflow: auto; border-right: 1px solid #19313e; background: #091923; padding: 12px; }
+    aside h2, section h2 { margin: 7px 0 10px; font-size: 13px; color: #a9b5cc; text-transform: uppercase; letter-spacing: .08em; }
+    #home, #objects button { display: flex; justify-content: space-between; width: 100%; margin: 2px 0; padding: 9px 10px; border: 0; border-radius: 7px; color: #dceaf0; background: transparent; text-align: left; cursor: pointer; }
+    #home { margin-bottom: 12px; font-weight: 700; }
+    #home:hover, #home.active, #objects button:hover, #objects button.active { background: #12303b; color: #67dfdf; }
+    #objects small { color: #72809b; }
+    .workspace { min-width: 0; display: grid; grid-template-rows: 290px minmax(250px, 1fr); }
+    .workspace.home-view { grid-template-rows: minmax(0,1fr); }
+    .browser, .query { min-height: 0; padding: 14px; overflow: hidden; }
+    .browser { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+    .query { position: relative; border-bottom: 1px solid #273047; display: grid; grid-template-rows: auto 82px auto minmax(0, 1fr); gap: 8px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; min-height: 36px; }
+    .toolbar h2 { margin: 0; color: #edf2ff; text-transform: none; letter-spacing: 0; font-size: 17px; }
+    button.primary { padding: 8px 13px; color: white; background: #506cff; border: 0; border-radius: 7px; cursor: pointer; }
+    button.secondary { padding: 7px 10px; color: #dbe4f5; background: #1b2436; border: 1px solid #35415a; border-radius: 7px; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    #summary { color: #8e9bb3; font-size: 12px; }
+    .table-wrap { min-height: 0; overflow: auto; border: 1px solid #273047; border-radius: 8px; background: #0b0f18; }
+    table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }
+    th { position: sticky; top: 0; z-index: 1; background: #151c2a; color: #b9c5da; text-align: left; }
+    th, td { max-width: 440px; padding: 8px 10px; border-right: 1px solid #242c3d; border-bottom: 1px solid #202737; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
+    td.null { color: #707d95; font-style: italic; }
+    td details { max-width: 440px; }
+    td details summary { margin-top: 5px; color: #57d8d2; cursor: pointer; user-select: none; }
+    .cell-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; color: #d6e4e9; }
+    .cell-full { margin-top: 7px; padding: 8px; border-left: 2px solid #1aaeba; background: #071820; white-space: pre-wrap; }
+    details { margin: 8px 0; color: #9ba8bf; font-size: 12px; }
+    pre { white-space: pre-wrap; }
+    textarea { width: 100%; resize: none; padding: 10px; border: 1px solid #34405a; border-radius: 8px; background: #0b0f18; color: #f0f4ff; font: 13px ui-monospace, SFMono-Regular, monospace; outline: none; }
+    #suggestions { position: absolute; z-index: 5; top: 132px; left: 14px; width: min(360px,calc(100% - 28px)); max-height: 170px; overflow: auto; border: 1px solid #28505c; border-radius: 8px; background: #0b2029; box-shadow: 0 12px 30px #0008; }
+    #suggestions:empty { display: none; }
+    #suggestions button { display: flex; justify-content: space-between; width: 100%; padding: 8px 11px; border: 0; color: #dceef1; background: transparent; text-align: left; cursor: pointer; }
+    #suggestions button:hover, #suggestions button.active { color: #72e4df; background: #143640; }
+    #suggestions small { color: #738d96; }
+    #message { color: #8fa0ba; font-size: 12px; }
+    #message.error { color: #ff8e9c; }
+    .pagination { display: flex; align-items: center; gap: 8px; padding-top: 8px; }
+    #home-panel { display: none; overflow: auto; padding: 34px; }
+    #home-panel h2 { margin: 0; color: #edf7fb; font-size: 28px; text-transform: none; letter-spacing: 0; }
+    #home-panel > p { color: #91a8b4; max-width: 720px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill,minmax(210px,1fr)); gap: 12px; margin-top: 26px; }
+    .card { padding: 16px; border: 1px solid #1d3a47; border-radius: 10px; background: #0b202b; cursor: pointer; }
+    .card:hover { border-color: #00b7c7; transform: translateY(-1px); }
+    .card strong { display: block; color: #dffbff; overflow-wrap: anywhere; }
+    .card span { color: #738f9c; font-size: 11px; text-transform: uppercase; }
+    html[data-theme="light"] body { color: #17272e; background: #f2f6f7; }
+    html[data-theme="light"] header,html[data-theme="light"] aside { border-color: #cadadd; background: #fff; }
+    html[data-theme="light"] #search,html[data-theme="light"] textarea,html[data-theme="light"] .theme-select { color: #17272e; border-color: #b9cdd2; background: #fff; }
+    html[data-theme="light"] .table-wrap,html[data-theme="light"] .cell-full { color: #17272e; border-color: #cadadd; background: #fff; }
+    html[data-theme="light"] th { color: #304b55; background: #e7eff1; }
+    html[data-theme="light"] th,html[data-theme="light"] td { border-color: #d9e4e7; }
+    html[data-theme="light"] .card { border-color: #c9dadd; background: #fff; }
+    html[data-theme="light"] .toolbar h2,html[data-theme="light"] #home-panel h2 { color: #17272e; }
+    html[data-theme="michigan"] body { background: #001f42; }
+    html[data-theme="michigan"] header,html[data-theme="michigan"] aside { border-color: #31527a; background: #00274c; }
+    html[data-theme="michigan"] .mark { display: none; }
+    html[data-theme="michigan"] h1 { display: none; }
+    html[data-theme="michigan"] .university-logo { display: block; }
+    html[data-theme="michigan"] .nav a:hover,html[data-theme="michigan"] .nav a.active,html[data-theme="michigan"] #home:hover,html[data-theme="michigan"] #home.active,html[data-theme="michigan"] #objects button:hover,html[data-theme="michigan"] #objects button.active { color: #ffcb05; background: #123f70; }
+    html[data-theme="michigan"] button.primary { color: #00274c; background: #ffcb05; }
+    html[data-theme="michigan"] #search,html[data-theme="michigan"] textarea,html[data-theme="michigan"] .theme-select { border-color: #55749a; background: #001b38; }
+    html[data-theme="michigan"] .card { border-color: #31527a; background: #002f5f; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="mark">D</div>
+    <h1>DotVectorDB SQL Browser</h1>
+    <img class="university-logo" src="/assets/michigan-logo-white.svg" alt="University of Michigan">
+    <nav class="nav"><a href="/">Home</a><a class="active" href="/sql">SQL</a><a href="/graph">Graph</a><a href="/chat">Chat</a></nav>
+    <span id="database"></span>
+    <input id="search" placeholder="Search tables and values…">
+    <select id="theme" class="theme-select" aria-label="Theme"><option value="dark">Dark</option><option value="light">Light</option><option value="michigan">Michigan</option></select>
+    <span id="mode" class="badge">READ-ONLY</span>
+  </header>
+  <main>
+    <aside><button id="home" class="active">⌂ Home</button><h2>Tables & views</h2><div id="objects"></div></aside>
+    <div class="workspace">
+      <section id="home-panel"><h2>Database overview</h2><p>Browse tables, inspect schemas, search values, or run SQL from one workspace.</p><div id="cards" class="cards"></div></section>
+      <section class="query">
+        <div class="toolbar"><h2>SQL</h2><button id="run" class="primary">Run</button></div>
+        <textarea id="sql" spellcheck="false" placeholder="SELECT * FROM entity LIMIT 25"></textarea>
+        <div id="suggestions"></div>
+        <div id="message">Read-only mode accepts SELECT, WITH, and EXPLAIN.</div>
+        <div class="table-wrap"><table id="results"></table></div>
+      </section>
+      <section class="browser">
+        <div class="toolbar"><h2 id="title">Select a table</h2><span id="summary"></span></div>
+        <details><summary>Schema</summary><pre id="schema">Select a table to inspect its columns.</pre></details>
+        <div class="table-wrap"><table id="data"></table></div>
+        <div class="pagination"><button id="previous" class="secondary">Previous</button><button id="next" class="secondary">Next</button><span id="page"></span></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const PAGE_SIZE=100;
+    let selected=null, offset=0, total=0, objects=[], searchTimer=null, schemaColumns=[], suggestionIndex=0;
+    const SQL_KEYWORDS=['SELECT','FROM','WHERE','JOIN','LEFT JOIN','INNER JOIN','ON','GROUP BY','ORDER BY','HAVING','LIMIT','OFFSET','AS','AND','OR','NOT','NULL','IS NULL','IS NOT NULL','DISTINCT','COUNT','SUM','AVG','MIN','MAX','CASE','WHEN','THEN','ELSE','END','WITH','EXPLAIN','INSERT INTO','UPDATE','DELETE FROM','CREATE TABLE','ALTER TABLE','DROP TABLE','VALUES','SET'];
+    const $=selector=>document.querySelector(selector);
+    const theme=$('#theme'),savedTheme=localStorage.getItem('dotvdb-theme')||'dark';document.documentElement.dataset.theme=savedTheme;theme.value=savedTheme;theme.onchange=()=>{document.documentElement.dataset.theme=theme.value;localStorage.setItem('dotvdb-theme',theme.value);};
+    function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+    function display(value){if(value===null)return '<span class="null">NULL</span>';const text=typeof value==='object'?JSON.stringify(value):String(value),safe=escapeHtml(text);if(text.length<=220)return safe;return `<div class="cell-preview">${safe}</div><details><summary>View more</summary><div class="cell-full">${safe}</div></details>`;}
+    function renderTable(element,columns,rows){element.innerHTML=columns.length?`<thead><tr>${columns.map(c=>`<th>${escapeHtml(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${display(value)}</td>`).join('')}</tr>`).join('')}</tbody>`:'<tbody><tr><td>No rows returned.</td></tr></tbody>';}
+    function renderObjects(filter=''){const term=filter.toLowerCase(),filtered=objects.filter(object=>object.name.toLowerCase().includes(term));$('#objects').innerHTML=filtered.map(object=>`<button data-name="${encodeURIComponent(object.name)}"><span>${escapeHtml(object.name)}</span><small>${object.type}</small></button>`).join('')||'<p id="summary">No matching tables.</p>';document.querySelectorAll('#objects button').forEach(button=>button.onclick=()=>selectTable(decodeURIComponent(button.dataset.name)));}
+    async function loadObjects(){const data=await fetch('/api/tables').then(r=>r.json());objects=data.objects;renderObjects();$('#cards').innerHTML=objects.map(object=>`<div class="card" data-name="${encodeURIComponent(object.name)}"><strong>${escapeHtml(object.name)}</strong><span>${object.type}</span></div>`).join('');document.querySelectorAll('.card').forEach(card=>card.onclick=()=>selectTable(decodeURIComponent(card.dataset.name)));}
+    function showHome(){selected=null;offset=0;$('.workspace').classList.add('home-view');$('#home-panel').style.display='block';$('.browser').style.display='none';$('.query').style.display='none';$('#home').classList.add('active');document.querySelectorAll('#objects button').forEach(b=>b.classList.remove('active'));$('#search').value='';renderObjects();}
+    async function selectTable(name,newOffset=0){selected=name;offset=newOffset;$('.workspace').classList.remove('home-view');$('#home-panel').style.display='none';$('.browser').style.display='grid';$('.query').style.display='grid';$('#home').classList.remove('active');const search=encodeURIComponent($('#search').value.trim());const response=await fetch(`/api/table/${encodeURIComponent(name)}?limit=${PAGE_SIZE}&offset=${offset}&search=${search}`);if(!response.ok){return showMessage(await response.text(),true);}const data=await response.json();total=data.total;schemaColumns=data.schema.map(c=>c.name);$('#title').textContent=name;$('#summary').textContent=`${total} matching row${total===1?'':'s'}`;$('#schema').textContent=data.schema.map(c=>`${c.name} ${c.type||''}${c.pk?' PRIMARY KEY':''}${c.notnull?' NOT NULL':''}${c.dflt_value!==null?` DEFAULT ${c.dflt_value}`:''}`).join('\n');renderTable($('#data'),data.columns,data.rows);$('#page').textContent=total?`${offset+1}–${Math.min(offset+PAGE_SIZE,total)} of ${total}`:'0 rows';$('#previous').disabled=offset===0;$('#next').disabled=offset+PAGE_SIZE>=total;document.querySelectorAll('#objects button').forEach(b=>b.classList.toggle('active',decodeURIComponent(b.dataset.name)===name));}
+    function currentSqlWord(){const input=$('#sql'),before=input.value.slice(0,input.selectionStart),match=before.match(/[A-Za-z_][A-Za-z0-9_ ]*$/);return match?match[0].split(/\s+/).pop():'';}
+    function sqlSuggestions(){const word=currentSqlWord().toLowerCase();if(!word){$('#suggestions').innerHTML='';return;}const candidates=[...SQL_KEYWORDS.map(value=>({value,type:'keyword'})),...objects.map(object=>({value:object.name,type:object.type})),...schemaColumns.map(value=>({value,type:'column'}))],seen=new Set(),matches=candidates.filter(item=>item.value.toLowerCase().startsWith(word)&&item.value.toLowerCase()!==word&&!seen.has(item.value.toLowerCase())&&seen.add(item.value.toLowerCase())).slice(0,10);suggestionIndex=0;$('#suggestions').innerHTML=matches.map((item,index)=>`<button class="${index===0?'active':''}" data-value="${encodeURIComponent(item.value)}"><span>${escapeHtml(item.value)}</span><small>${item.type}</small></button>`).join('');document.querySelectorAll('#suggestions button').forEach(button=>button.onmousedown=event=>{event.preventDefault();applySuggestion(decodeURIComponent(button.dataset.value));});}
+    function applySuggestion(value){const input=$('#sql'),start=input.selectionStart,before=input.value.slice(0,start),match=before.match(/[A-Za-z_][A-Za-z0-9_]*$/),wordStart=match?start-match[0].length:start;input.value=input.value.slice(0,wordStart)+value+input.value.slice(start);input.selectionStart=input.selectionEnd=wordStart+value.length;$('#suggestions').innerHTML='';input.focus();}
+    function moveSuggestion(direction){const buttons=[...document.querySelectorAll('#suggestions button')];if(!buttons.length)return;buttons[suggestionIndex]?.classList.remove('active');suggestionIndex=(suggestionIndex+direction+buttons.length)%buttons.length;buttons[suggestionIndex].classList.add('active');buttons[suggestionIndex].scrollIntoView({block:'nearest'});}
+    function showMessage(text,error=false){$('#message').textContent=text;$('#message').classList.toggle('error',error);}
+    async function runQuery(){showMessage('Running…');const response=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sql:$('#sql').value})});if(!response.ok){return showMessage(await response.text(),true);}const data=await response.json();renderTable($('#results'),data.columns,data.rows);showMessage(data.affected!==null?`${data.affected} row(s) affected.`:`${data.rows.length} row(s) returned${data.truncated?' (limited to 500)':''}.`);if(data.affected!==null){await loadObjects();if(selected)await selectTable(selected,offset);}}
+    $('#home').onclick=showHome;$('#previous').onclick=()=>selected&&selectTable(selected,Math.max(0,offset-PAGE_SIZE));$('#next').onclick=()=>selected&&selectTable(selected,offset+PAGE_SIZE);$('#run').onclick=runQuery;$('#sql').oninput=sqlSuggestions;$('#sql').onblur=()=>setTimeout(()=>$('#suggestions').innerHTML='',120);$('#sql').onkeydown=e=>{const hasSuggestions=$('#suggestions').children.length;if(hasSuggestions&&(e.key==='ArrowDown'||e.key==='ArrowUp')){e.preventDefault();moveSuggestion(e.key==='ArrowDown'?1:-1);}else if(hasSuggestions&&(e.key==='Tab'||e.key==='Enter')&&!e.ctrlKey&&!e.metaKey){e.preventDefault();applySuggestion(decodeURIComponent(document.querySelectorAll('#suggestions button')[suggestionIndex].dataset.value));}else if(e.key==='Escape'){$('#suggestions').innerHTML='';}else if((e.ctrlKey||e.metaKey)&&e.key==='Enter')runQuery();};$('#search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>selected?selectTable(selected,0):renderObjects($('#search').value),250);};
+    (async()=>{const status=await fetch('/api/status').then(r=>r.json());$('#database').textContent=status.database;$('#mode').textContent=status.mode.toUpperCase();$('#mode').classList.toggle('write',status.mode==='write');if(status.mode==='write')showMessage('Write mode is enabled. Changes are committed after each successful statement.');await loadObjects();showHome();})();
+  </script>
+</body>
+</html>

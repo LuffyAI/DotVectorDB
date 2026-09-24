@@ -95,6 +95,36 @@ class RelationshipIndexer:
         )
         self.small_llm = StaticModel.from_pretrained("minishlab/potion-base-32M")
 
+    async def log_failure(
+        self,
+        phase,
+        item_type,
+        item_id,
+        error,
+        lock_held=False,
+    ):
+        """Persist a processing failure without masking the original error."""
+        async def insert_failure():
+            await self.conn.execute(
+                """
+                INSERT INTO failure_log (
+                    phase, item_type, item_id, error_message
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (phase, item_type, str(item_id), str(error)),
+            )
+            await self.conn.commit()
+
+        try:
+            if lock_held:
+                await insert_failure()
+            else:
+                async with self.lock:
+                    await insert_failure()
+        except Exception as logging_error:
+            traceback.print_exc()
+            print(f"Unable to save failure log: {logging_error}")
+
     async def remove_extra_questions_from_relationship(self, questions, threshold=0.7):
             """Deduplicate queries based on cosine similarity of their embeddings."""
             embeddings = self.small_llm.encode(questions)
@@ -415,12 +445,20 @@ class RelationshipIndexer:
         number_to_entity_id_map, number_to_entity_name_map = await self.prepare_local_entity_mapping_for_chunk(entity_ids)
         embedding_model_hash = self.hash_func(self.embedding_model.model_name)
         embedding_model_hash_str = f"{embedding_model_hash}"
-        RELATIONSHIP_PROMPT_FILLED = RELATIONSHIP_PROMPT.format(entities=json.dumps(number_to_entity_name_map), chunk=chunk, entity_example=ENTITY_EXAMPLE, input_example=INPUT_EXAMPLE, output_example=OUTPUT_EXAMPLE)
+        RELATIONSHIP_PROMPT_FILLED = RELATIONSHIP_PROMPT.format(
+            entities=json.dumps(number_to_entity_name_map),
+            chunk=chunk,
+            entity_example=ENTITY_EXAMPLE,
+            input_example=INPUT_EXAMPLE,
+            output_example=OUTPUT_EXAMPLE,
+            language=self.summary_language,
+        )
 
         # We call the language model with the filled prompt and expect a response in the format of ExtractedEntitiesResponse.
         try:
           response = await self.language_model(RELATIONSHIP_PROMPT_FILLED, structuredInput=Relationships)
         except Exception as e:
+           await self.log_failure("relation", "chunk", chunk_hash, e)
            print(f"Error extracting relationships: {e}")
            return 0
 
@@ -548,6 +586,14 @@ class RelationshipIndexer:
                 await self.conn.commit()
                 return new_relationships_added
             except Exception as e:
+                await self.conn.rollback()
+                await self.log_failure(
+                    "relation",
+                    "chunk",
+                    chunk_hash,
+                    e,
+                    lock_held=True,
+                )
                 traceback.print_exc()
                 print(f"Error saving extracted relationships to database: {e}")
                 return 0
@@ -597,6 +643,14 @@ class RelationshipIndexer:
                 *tasks,
                 return_exceptions=True
             )
+            for chunk, result in zip(batch, results):
+                if isinstance(result, Exception):
+                    await self.log_failure(
+                        "relation",
+                        "chunk",
+                        self.hash_func(chunk[0]),
+                        result,
+                    )
             # Each successful result is the number of NEW relationships
             # inserted by extract_relation().
             for result in results:
@@ -717,6 +771,12 @@ class RelationshipIndexer:
                     await self.conn.commit()
                 return None
             except Exception as error:
+                await self.log_failure(
+                    "desc",
+                    "relation",
+                    relationship.get("relation_id", "unknown"),
+                    error,
+                )
                 if verbose:
                     print(
                         f"Summarization failed for relationship "
@@ -806,6 +866,12 @@ class RelationshipIndexer:
                 )
                 return None
             except Exception as error:
+                await self.log_failure(
+                    "relation",
+                    "relation",
+                    relationship.get("relation_id", "unknown"),
+                    error,
+                )
                 if verbose:
                     print(f"Embedding failed, retrying next batch: {error}")
                 traceback.print_exc()
@@ -1254,6 +1320,14 @@ class RelationshipIndexer:
                     *(ingest_chunk(chunk) for chunk in batch),
                     return_exceptions=True,
                 )
+                for chunk, result in zip(batch, results):
+                    if isinstance(result, Exception):
+                        await self.log_failure(
+                            "relation",
+                            "chunk",
+                            self.hash_func(chunk[0]),
+                            result,
+                        )
                 for result in results:
                     if not isinstance(result, Exception):
                         progress.update(result)

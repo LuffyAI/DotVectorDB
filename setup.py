@@ -31,6 +31,8 @@ setup(
             "compiled_vec1/vec1.so",
             "schema/*.sql",
             "web_interface/*.html",
+            "sql_browser/*.html",
+            "sql_browser/*.svg",
         ],
     },
 

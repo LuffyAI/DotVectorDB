@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DotVectorDB Browser</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; color: #e6f5f7; background: radial-gradient(circle at 75% 5%,#123b46 0,transparent 34%),#06131a; }
+    nav { height: 66px; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid #1b3944; background: #081a22d9; }
+    .brand { display: flex; align-items: center; gap: 12px; color: inherit; text-decoration: none; font-weight: 800; }
+    .university { display: none; font-family: Georgia,serif; letter-spacing: .025em; text-transform: uppercase; }
+    .university-logo { display: none; width: 285px; height: 42px; object-fit: contain; object-position: left center; }
+    .mark { display: grid; place-items: center; width: 35px; height: 35px; border-radius: 50%; color: #06202a; background: linear-gradient(135deg,#00b7c7,#63d8a5); }
+    .links { display: flex; gap: 8px; margin-left: auto; }
+    .links a { padding: 9px 13px; border-radius: 8px; color: #a9c0c8; text-decoration: none; }
+    .links a:hover { color: #eaffff; background: #12303b; }
+    .theme-select { margin-left: 12px; padding: 8px 10px; border: 1px solid #28505c; border-radius: 8px; color: inherit; background: #071820; }
+    main { width: min(1050px,calc(100% - 40px)); margin: 0 auto; padding: 90px 0; }
+    .eyebrow { color: #5dd9d5; font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 720px; margin: 14px 0; font-size: clamp(38px,6vw,68px); line-height: 1.02; letter-spacing: -.04em; }
+    .lead { max-width: 650px; color: #94adb5; font-size: 18px; line-height: 1.6; }
+    .cards { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 18px; margin-top: 52px; }
+    .card { min-height: 225px; padding: 27px; border: 1px solid #1d424e; border-radius: 15px; color: inherit; background: #0a2029cc; text-decoration: none; transition: .18s ease; }
+    .card:hover { border-color: #30c8cc; background: #0d2933; transform: translateY(-3px); box-shadow: 0 16px 45px #0005; }
+    .icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 11px; color: #70e5dc; background: #123b43; font-size: 21px; }
+    .card h2 { margin: 25px 0 9px; font-size: 22px; }
+    .card p { margin: 0; color: #8fa8b0; line-height: 1.55; }
+    .arrow { display: block; margin-top: 22px; color: #60ded7; font-weight: 700; }
+    @media (max-width: 680px) { main { padding-top: 55px; } .cards { grid-template-columns: 1fr; } .links { display: none; } }
+    html[data-theme="light"] body { color: #14252c; background: radial-gradient(circle at 75% 5%,#d9f3f3 0,transparent 34%),#f5f8f9; }
+    html[data-theme="light"] nav { border-color: #cfdee2; background: #fffffff0; }
+    html[data-theme="light"] .links a { color: #45616b; }
+    html[data-theme="light"] .links a:hover { color: #073b45; background: #dceff1; }
+    html[data-theme="light"] .card { border-color: #c8dce0; background: #fff; box-shadow: 0 8px 28px #18343d10; }
+    html[data-theme="light"] .card:hover { border-color: #079aa5; background: #f8ffff; }
+    html[data-theme="light"] .card p,html[data-theme="light"] .lead { color: #56717b; }
+    html[data-theme="light"] .theme-select { border-color: #bcd1d6; background: white; }
+    html[data-theme="michigan"] body { color: #fff; background: radial-gradient(circle at 76% 7%,#164f91 0,transparent 38%),#001f42; }
+    html[data-theme="michigan"] nav { border-color: #31527a; background: #00274cee; }
+    html[data-theme="michigan"] .mark { display: none; }
+    html[data-theme="michigan"] .product { display: none; }
+    html[data-theme="michigan"] .university-logo { display: block; }
+    html[data-theme="michigan"] .eyebrow,html[data-theme="michigan"] .arrow { color: #ffcb05; }
+    html[data-theme="michigan"] .card { border-color: #31527a; background: #002f5fcf; }
+    html[data-theme="michigan"] .card:hover { border-color: #ffcb05; background: #063d73; }
+    html[data-theme="michigan"] .icon { color: #ffcb05; background: #123f70; }
+    html[data-theme="michigan"] .theme-select { border-color: #55749a; background: #001f42; }
+  </style>
+</head>
+<body>
+  <nav><a class="brand" href="/"><span class="mark">D</span><span class="product">DotVectorDB</span><img class="university-logo" src="/assets/michigan-logo-white.svg" alt="University of Michigan"></a><div class="links"><a href="/sql">SQL Browser</a><a href="/graph">Graph Browser</a><a href="/chat">Chat</a></div><select id="theme" class="theme-select" aria-label="Theme"><option value="dark">Dark</option><option value="light">Light</option><option value="michigan">Michigan</option></select></nav>
+  <main>
+    <div class="eyebrow">Database workspace</div>
+    <h1>Explore your data from every angle.</h1>
+    <p class="lead">Inspect the underlying SQLite records or move through the knowledge graph—all from one local DotVectorDB interface.</p>
+    <div class="cards">
+      <a class="card" href="/sql"><span class="icon">▦</span><h2>SQL Browser</h2><p>Browse tables and schemas, search stored values, and run SQL queries against your database.</p><span class="arrow">Open SQL Browser →</span></a>
+      <a class="card" href="/graph"><span class="icon">⬡</span><h2>Graph Browser</h2><p>Explore entities and relationships, inspect neighborhoods, and find shortest paths visually.</p><span class="arrow">Open Graph Browser →</span></a>
+      <a class="card" href="/chat"><span class="icon">◌</span><h2>RAG Chat</h2><p>Ask questions using any RAG function configured when the database viewer was launched.</p><span class="arrow">Open Chat →</span></a>
+    </div>
+  </main>
+  <script>const theme=document.querySelector('#theme'),savedTheme=localStorage.getItem('dotvdb-theme')||'dark';document.documentElement.dataset.theme=savedTheme;theme.value=savedTheme;theme.onchange=()=>{document.documentElement.dataset.theme=theme.value;localStorage.setItem('dotvdb-theme',theme.value);};</script>
+</body>
+</html>

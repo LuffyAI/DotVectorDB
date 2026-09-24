@@ -9,7 +9,14 @@
     * { box-sizing: border-box; }
     body { margin: 0; overflow: hidden; background: #080b12; color: #edf2ff; }
     header { height: 64px; display: flex; align-items: center; gap: 18px; padding: 0 20px; border-bottom: 1px solid #242b3b; background: #0d111b; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #06202a; background: linear-gradient(135deg,#00b7c7,#63d8a5); font-weight: 900; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .02em; }
+    .university { display: none; font-family: Georgia,serif; font-weight: 700; letter-spacing: .025em; text-transform: uppercase; }
+    .university-logo { display: none; width: 285px; height: 42px; object-fit: contain; object-position: left center; }
+    .nav { display: flex; gap: 4px; }
+    .nav a { padding: 7px 9px; border-radius: 7px; color: #8ca5ae; text-decoration: none; font-size: 12px; }
+    .nav a:hover, .nav a.active { color: #eaffff; background: #12303b; }
+    .theme-select { padding: 8px; border: 1px solid #303a50; border-radius: 8px; color: inherit; background: #151b29; }
     #stats { color: #99a5bd; font-size: 13px; }
     header input { margin-left: auto; width: 260px; padding: 9px 12px; color: white; background: #151b29; border: 1px solid #303a50; border-radius: 8px; outline: none; }
     button { padding: 9px 13px; color: white; background: #506cff; border: 0; border-radius: 8px; cursor: pointer; }
@@ -28,13 +35,30 @@
     .type-options label { display: flex; align-items: center; gap: 7px; margin: 5px 0; }
     .type-options input { width: auto; margin: 0; }
     .controls button { width: 100%; }
+    html[data-theme="light"] body { color: #17272e; background: #f3f7f8; }
+    html[data-theme="light"] header,html[data-theme="light"] aside { border-color: #cadadd; background: #fff; }
+    html[data-theme="light"] header input,html[data-theme="light"] .theme-select,html[data-theme="light"] .controls input[type="number"],html[data-theme="light"] .controls input[type="text"] { color: #17272e; border-color: #b9cdd2; background: #fff; }
+    html[data-theme="light"] .controls { border-color: #c9dadd; background: #f7fbfb; }
+    html[data-theme="michigan"] body { background: #001f42; }
+    html[data-theme="michigan"] header,html[data-theme="michigan"] aside { border-color: #31527a; background: #00274c; }
+    html[data-theme="michigan"] .nav a:hover,html[data-theme="michigan"] .nav a.active { color: #ffcb05; background: #123f70; }
+    html[data-theme="michigan"] button { color: #00274c; background: #ffcb05; }
+    html[data-theme="michigan"] header input,html[data-theme="michigan"] .theme-select { border-color: #55749a; background: #001b38; }
+    html[data-theme="michigan"] .controls { border-color: #31527a; background: #002f5f; }
+    html[data-theme="michigan"] h1 { display: none; }
+    html[data-theme="michigan"] .mark { display: none; }
+    html[data-theme="michigan"] .university-logo { display: block; }
   </style>
 </head>
 <body>
   <header>
+    <div class="mark">D</div>
     <h1>DotVectorDB Live Graph</h1>
+    <img class="university-logo" src="/assets/michigan-logo-white.svg" alt="University of Michigan">
+    <nav class="nav"><a href="/">Home</a><a href="/sql">SQL</a><a class="active" href="/graph">Graph</a><a href="/chat">Chat</a></nav>
     <span id="stats">Loading…</span>
     <input id="search" placeholder="Find an entity">
+    <select id="theme" class="theme-select" aria-label="Theme"><option value="dark">Dark</option><option value="light">Light</option><option value="michigan">Michigan</option></select>
     <button id="refresh">Refresh</button>
   </header>
   <main>
@@ -42,6 +66,8 @@
     <aside id="details"><p class="hint">Click a node to inspect it. Double-click a node to load its one-hop neighborhood.</p></aside>
   </main>
   <script>
+    const theme=document.querySelector('#theme'),savedTheme=localStorage.getItem('dotvdb-theme')||'dark';document.documentElement.dataset.theme=savedTheme;theme.value=savedTheme;theme.onchange=()=>{document.documentElement.dataset.theme=theme.value;localStorage.setItem('dotvdb-theme',theme.value);draw();};
+    const API = location.pathname === '/graph' ? '/graph-api' : '/api';
     const canvas = document.querySelector('#graph'), ctx = canvas.getContext('2d');
     const details = document.querySelector('#details'), stats = document.querySelector('#stats');
     let nodes = [], edges = [], byId = new Map(), scale = 1, ox = 0, oy = 0, drag = null, selected = null, hovered = null, lastVersion = null, loading = false, cacheKey = null, focusPositions = new Map(), subgraphNodeIds = null, subgraphEdgeIds = null, hopRadius = 1, typeFilters = new Set(), pathSource = null, pathResult = null;
@@ -66,7 +92,7 @@
         if(!force){const cached=await readCache(key);if(cached&&cached.nodes.length===status.entities&&cached.edges.length===status.relationships){mergeGraph(cached,null,true);fitGraph();lastVersion=status.version;stats.textContent=`${status.entities} entities · ${status.relationships} relationships · cached`;return;}}
         nodes=[];edges=[];byId=new Map();draw();let nodeOffset=0,edgeOffset=0,moreNodes=true,moreEdges=true;
         while(moreNodes||moreEdges){
-          const data=await fetch(`/api/graph?limit=500&node_offset=${nodeOffset}&edge_offset=${edgeOffset}`,{cache:'no-store'}).then(r=>r.json());
+          const data=await fetch(`${API}/graph?limit=500&node_offset=${nodeOffset}&edge_offset=${edgeOffset}`,{cache:'no-store'}).then(r=>r.json());
           mergeGraph(data,null,false);nodeOffset=data.next_node_offset;edgeOffset=data.next_edge_offset;moreNodes=data.has_more_nodes;moreEdges=data.has_more_edges;
           stats.textContent=`Loading ${nodes.length}/${status.entities} entities · ${edges.length}/${status.relationships} relationships`;
           await new Promise(resolve=>requestAnimationFrame(resolve));
@@ -75,11 +101,11 @@
       }finally{loading=false;}
     }
     async function expand(n){
-      const data=await fetch(`/api/neighbors/${encodeURIComponent(n.id)}?limit=100`,{cache:'no-store'}).then(r=>r.json());
+      const data=await fetch(`${API}/neighbors/${encodeURIComponent(n.id)}?limit=100`,{cache:'no-store'}).then(r=>r.json());
       mergeGraph(data,n,false);inspectNode(n);
     }
     async function checkStatus(){
-      const s=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());
+      const s=await fetch(`${API}/status`,{cache:'no-store'}).then(r=>r.json());
       if(lastVersion===null||s.version!==lastVersion)await load(s);else if(!loading)stats.textContent=`${s.entities} entities · ${s.relationships} relationships · ${nodes.length} loaded`;
     }
     function simulate(){
@@ -90,24 +116,25 @@
     }
     function screen(n){ return [canvas.clientWidth/2+ox+n.x*scale,canvas.clientHeight/2+oy+n.y*scale]; }
     function draw(){
+      const light=document.documentElement.dataset.theme==='light',edgeColor=light?'#b5c5ca':'#30384a',labelColor=light?'#1e343c':'#dfe7fa';
       ctx.clearRect(0,0,canvas.clientWidth,canvas.clientHeight);
       const selectedId=pathSource?null:selected?.id, neighborIds=new Set(),pathEdgeRanks=new Map(),pathNodeIds=new Set();
       for(const path of pathResult?.paths||[]){for(const id of path.nodes)pathNodeIds.add(id);for(const id of path.edges){if(!pathEdgeRanks.has(id))pathEdgeRanks.set(id,[]);pathEdgeRanks.get(id).push(path.rank);}}
-      for(const e of edges){if(subgraphEdgeIds&&!subgraphEdgeIds.has(e.id))continue;const active=selectedId&&(e.source===selectedId||e.target===selectedId);if(active){neighborIds.add(e.source);neighborIds.add(e.target);continue;}const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=1;ctx.strokeStyle='#30384a';ctx.stroke();}
+      for(const e of edges){if(subgraphEdgeIds&&!subgraphEdgeIds.has(e.id))continue;const active=selectedId&&(e.source===selectedId||e.target===selectedId);if(active){neighborIds.add(e.source);neighborIds.add(e.target);continue;}const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=1;ctx.strokeStyle=edgeColor;ctx.stroke();}
       if(selectedId)for(const e of edges){if(subgraphEdgeIds&&!subgraphEdgeIds.has(e.id))continue;if(e.source!==selectedId&&e.target!==selectedId)continue;const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b);ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=2.5;ctx.strokeStyle='#ff405c';ctx.stroke();}
       for(const e of edges){const ranks=pathEdgeRanks.get(e.id);if(!ranks)continue;const a=byId.get(e.source),b=byId.get(e.target);if(!a||!b)continue;const [ax,ay]=screen(a),[bx,by]=screen(b),mx=(ax+bx)/2,my=(ay+by)/2,label=ranks.join(',');ctx.beginPath();ctx.moveTo(ax,ay);ctx.lineTo(bx,by);ctx.lineWidth=4;ctx.strokeStyle='#35d07f';ctx.stroke();ctx.beginPath();ctx.arc(mx,my,10,0,Math.PI*2);ctx.fillStyle='#0d7a48';ctx.fill();ctx.fillStyle='white';ctx.font='bold 10px system-ui';ctx.textAlign='center';ctx.fillText(label,mx,my+3);ctx.textAlign='start';}
       const q=document.querySelector('#search').value.toLowerCase();
-      for(const n of nodes){if(subgraphNodeIds&&!subgraphNodeIds.has(n.id))continue;const [x,y]=screen(n), hit=q&&n.name.toLowerCase().includes(q),r=Math.max(4,Math.min(14,4+Math.sqrt(n.degree||0))),onPath=pathNodeIds.has(n.id)||n===pathSource;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=onPath?'#35d07f':hit?'#fff':color(n);ctx.fill();if(!pathSource&&(n===selected||neighborIds.has(n.id))){ctx.lineWidth=n===selected?3:2;ctx.strokeStyle='#ff405c';ctx.stroke();}if(scale>1.6||hit||n===selected||n===hovered||neighborIds.has(n.id)||onPath){ctx.fillStyle='#dfe7fa';ctx.font='11px system-ui';ctx.fillText(n.name,x+r+4,y+4);} }
+      for(const n of nodes){if(subgraphNodeIds&&!subgraphNodeIds.has(n.id))continue;const [x,y]=screen(n), hit=q&&n.name.toLowerCase().includes(q),r=Math.max(4,Math.min(14,4+Math.sqrt(n.degree||0))),onPath=pathNodeIds.has(n.id)||n===pathSource;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=onPath?'#35d07f':hit?(light?'#00274c':'#fff'):color(n);ctx.fill();if(!pathSource&&(n===selected||neighborIds.has(n.id))){ctx.lineWidth=n===selected?3:2;ctx.strokeStyle='#ff405c';ctx.stroke();}if(scale>1.6||hit||n===selected||n===hovered||neighborIds.has(n.id)||onPath){ctx.fillStyle=labelColor;ctx.font='11px system-ui';ctx.fillText(n.name,x+r+4,y+4);} }
     }
     function restoreFocus(){for(const [id,p] of focusPositions){const n=byId.get(id);if(n){n.x=p.x;n.y=p.y;}}focusPositions.clear();}
     function focusNeighborhood(n,connected){restoreFocus();const neighbors=[];for(const e of connected){const other=byId.get(e.source===n.id?e.target:e.source);if(other&&!neighbors.includes(other))neighbors.push(other);}neighbors.forEach((other,i)=>{focusPositions.set(other.id,{x:other.x,y:other.y});const ring=Math.floor(i/12),slot=i%12,count=Math.min(12,neighbors.length-ring*12),angle=slot*Math.PI*2/count,radius=110+ring*75;other.x=n.x+Math.cos(angle)*radius;other.y=n.y+Math.sin(angle)*radius;other.vx=0;other.vy=0;});}
     function arrangeSubgraph(n,data){restoreFocus();const adjacency=new Map(data.nodes.map(x=>[x.id,[]]));for(const e of data.edges){adjacency.get(e.source)?.push(e.target);adjacency.get(e.target)?.push(e.source);}const distance=new Map([[n.id,0]]),queue=[n.id];for(let i=0;i<queue.length;i++){const id=queue[i],d=distance.get(id);for(const next of adjacency.get(id)||[])if(!distance.has(next)){distance.set(next,d+1);queue.push(next);}}const rings=new Map();for(const node of data.nodes){if(node.id===n.id)continue;const d=distance.get(node.id)??hopRadius;if(!rings.has(d))rings.set(d,[]);rings.get(d).push(byId.get(node.id));}for(const [ring,members] of rings)members.forEach((other,i)=>{if(!other)return;focusPositions.set(other.id,{x:other.x,y:other.y});const angle=i*Math.PI*2/members.length,radius=115*ring;other.x=n.x+Math.cos(angle)*radius;other.y=n.y+Math.sin(angle)*radius;other.vx=0;other.vy=0;});}
     function typeControls(types){return `<div class="controls"><label>Hop radius<input id="hop-radius" type="number" min="1" step="1" value="${hopRadius}"></label><div class="type-options">${types.map(t=>`<label><input type="checkbox" data-type="${encodeURIComponent(t)}" ${typeFilters.has(t)?'checked':''}>${escapeHtml(t)}</label>`).join('')||'<p class="hint">No routing types in range.</p>'}</div><button id="apply-subgraph">Apply subgraph</button><p class="hint">Only routing types found within this radius are listed. With none selected, all of them are shown.</p></div>`;}
     async function inspectNode(n){if(pathSource){if(n.id!==pathSource.id)await findPaths(n.id,null);return;}selected=n;await loadSubgraph(n);}
-    async function loadSubgraph(n){const params=new URLSearchParams({hops:String(hopRadius)});for(const type of typeFilters)params.append('type',type);const data=await fetch(`/api/subgraph/${encodeURIComponent(n.id)}?${params}`,{cache:'no-store'}).then(r=>r.json());mergeGraph(data,n,false);subgraphNodeIds=new Set(data.nodes.map(x=>x.id));subgraphEdgeIds=new Set(data.edges.map(x=>x.id));arrangeSubgraph(n,data);const connected=data.edges.filter(e=>e.source===n.id||e.target===n.id);const connections=connected.map(e=>{const other=byId.get(e.source===n.id?e.target:e.source);return `<p><strong>${escapeHtml(other?.name||'Unknown')}</strong><br>${escapeHtml(e.description||'No relationship description')}</p>`;}).join('');details.innerHTML=`<h2>${escapeHtml(n.name)}</h2><div>${(n.types||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('')}</div><p>Degree: ${n.degree} · ${data.nodes.length} nodes in subgraph · ${data.edges.length} relationships</p><button id="choose-paths">Find k shortest paths</button>${typeControls(data.available_types||[])}<p>${escapeHtml(n.description||'No description')}</p><h2>Immediate connections</h2>${connections||'<p class="hint">No matching relationships.</p>'}`;document.querySelector('#choose-paths').onclick=()=>startPathMode(n);document.querySelector('#apply-subgraph').onclick=()=>{hopRadius=Math.max(1,Math.floor(Number(document.querySelector('#hop-radius').value)||1));typeFilters=new Set([...document.querySelectorAll('.type-options input:checked')].map(input=>decodeURIComponent(input.dataset.type)));loadSubgraph(n);};draw();}
+    async function loadSubgraph(n){const params=new URLSearchParams({hops:String(hopRadius)});for(const type of typeFilters)params.append('type',type);const data=await fetch(`${API}/subgraph/${encodeURIComponent(n.id)}?${params}`,{cache:'no-store'}).then(r=>r.json());mergeGraph(data,n,false);subgraphNodeIds=new Set(data.nodes.map(x=>x.id));subgraphEdgeIds=new Set(data.edges.map(x=>x.id));arrangeSubgraph(n,data);const connected=data.edges.filter(e=>e.source===n.id||e.target===n.id);const connections=connected.map(e=>{const other=byId.get(e.source===n.id?e.target:e.source);return `<p><strong>${escapeHtml(other?.name||'Unknown')}</strong><br>${escapeHtml(e.description||'No relationship description')}</p>`;}).join('');details.innerHTML=`<h2>${escapeHtml(n.name)}</h2><div>${(n.types||[]).map(t=>`<span class="pill">${escapeHtml(t)}</span>`).join('')}</div><p>Degree: ${n.degree} · ${data.nodes.length} nodes in subgraph · ${data.edges.length} relationships</p><button id="choose-paths">Find k shortest paths</button>${typeControls(data.available_types||[])}<p>${escapeHtml(n.description||'No description')}</p><h2>Immediate connections</h2>${connections||'<p class="hint">No matching relationships.</p>'}`;document.querySelector('#choose-paths').onclick=()=>startPathMode(n);document.querySelector('#apply-subgraph').onclick=()=>{hopRadius=Math.max(1,Math.floor(Number(document.querySelector('#hop-radius').value)||1));typeFilters=new Set([...document.querySelectorAll('.type-options input:checked')].map(input=>decodeURIComponent(input.dataset.type)));loadSubgraph(n);};draw();}
     function startPathMode(n){restoreFocus();pathSource=n;pathResult=null;selected=n;subgraphNodeIds=null;subgraphEdgeIds=null;details.innerHTML=`<h2>Shortest paths</h2><p><strong>Source:</strong> ${escapeHtml(n.name)}</p><div class="controls"><label>Destination name<input id="path-destination" type="text" placeholder="Enter exact entity name"></label><label>Number of paths (k)<input id="path-k" type="number" min="1" step="1" value="3"></label><button id="run-paths">Find paths</button></div><p class="hint">Click another node or enter its name as the destination.</p>`;document.querySelector('#run-paths').onclick=()=>findPaths(null,document.querySelector('#path-destination').value);draw();}
     function ordinal(n){const m=n%100;return n+(m>=11&&m<=13?'th':n%10===1?'st':n%10===2?'nd':n%10===3?'rd':'th');}
-    async function findPaths(targetId,targetName){const k=Math.max(1,Math.floor(Number(document.querySelector('#path-k')?.value)||3)),params=new URLSearchParams({k:String(k)});if(targetId)params.set('target_id',targetId);else params.set('target_name',targetName||'');const response=await fetch(`/api/shortest-paths/${encodeURIComponent(pathSource.id)}?${params}`,{cache:'no-store'});if(!response.ok){details.insertAdjacentHTML('beforeend',`<p>${escapeHtml(await response.text())}</p>`);return;}pathResult=await response.json();mergeGraph(pathResult,pathSource,false);const lists=pathResult.paths.map(path=>`<p><strong>${ordinal(path.rank)} shortest:</strong> ${path.nodes.map(id=>escapeHtml(byId.get(id)?.name||id)).join(' → ')}</p>`).join('');details.innerHTML=`<h2>Shortest paths</h2><p><strong>Source:</strong> ${escapeHtml(byId.get(pathResult.source)?.name||pathResult.source)}<br><strong>Destination:</strong> ${escapeHtml(byId.get(pathResult.target)?.name||pathResult.target)}</p>${lists||'<p class="hint">No path connects these entities.</p>'}<button id="new-path">Choose another destination</button>`;document.querySelector('#new-path').onclick=()=>startPathMode(pathSource);draw();}
+    async function findPaths(targetId,targetName){const k=Math.max(1,Math.floor(Number(document.querySelector('#path-k')?.value)||3)),params=new URLSearchParams({k:String(k)});if(targetId)params.set('target_id',targetId);else params.set('target_name',targetName||'');const response=await fetch(`${API}/shortest-paths/${encodeURIComponent(pathSource.id)}?${params}`,{cache:'no-store'});if(!response.ok){details.insertAdjacentHTML('beforeend',`<p>${escapeHtml(await response.text())}</p>`);return;}pathResult=await response.json();mergeGraph(pathResult,pathSource,false);const lists=pathResult.paths.map(path=>`<p><strong>${ordinal(path.rank)} shortest:</strong> ${path.nodes.map(id=>escapeHtml(byId.get(id)?.name||id)).join(' → ')}</p>`).join('');details.innerHTML=`<h2>Shortest paths</h2><p><strong>Source:</strong> ${escapeHtml(byId.get(pathResult.source)?.name||pathResult.source)}<br><strong>Destination:</strong> ${escapeHtml(byId.get(pathResult.target)?.name||pathResult.target)}</p>${lists||'<p class="hint">No path connects these entities.</p>'}<button id="new-path">Choose another destination</button>`;document.querySelector('#new-path').onclick=()=>startPathMode(pathSource);draw();}
     function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     function pointer(e){const r=canvas.getBoundingClientRect();return [e.clientX-r.left,e.clientY-r.top];}
     function nodeAt(e,maxDistance=18){const [px,py]=pointer(e);let best=null,bd=maxDistance;for(const n of nodes){if(subgraphNodeIds&&!subgraphNodeIds.has(n.id))continue;const [x,y]=screen(n),d=Math.hypot(px-x,py-y);if(d<bd){best=n;bd=d;}}return best;}
@@ -116,7 +143,7 @@
     onmouseup=async()=>{if(!drag)return;if(!drag.moved&&drag.node)inspectNode(drag.node);else if(!drag.moved&&!drag.node){restoreFocus();selected=null;subgraphNodeIds=null;subgraphEdgeIds=null;typeFilters.clear();hopRadius=1;pathSource=null;pathResult=null;details.innerHTML='<p class="hint">Click a node to inspect its configurable subgraph.</p>';draw();}if(drag.node&&drag.moved&&cacheKey&&focusPositions.size===0)await writeCache(cacheKey,{nodes,edges});drag=null;canvas.style.cursor='grab';};
     onmousemove=e=>{if(!drag){hovered=nodeAt(e);canvas.style.cursor=hovered?'pointer':'grab';draw();return;}const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>3)drag.moved=true;if(drag.node){const [px,py]=pointer(e);drag.node.x=(px-canvas.clientWidth/2-ox)/scale;drag.node.y=(py-canvas.clientHeight/2-oy)/scale;drag.node.vx=0;drag.node.vy=0;}else{ox=drag.ox+dx;oy=drag.oy+dy;}draw();};
     canvas.onwheel=e=>{e.preventDefault();scale=Math.max(.05,Math.min(4,scale*Math.exp(-e.deltaY*.001)));draw();};
-    document.querySelector('#search').oninput=draw; document.querySelector('#refresh').onclick=async()=>load(await fetch('/api/status',{cache:'no-store'}).then(r=>r.json()),true); addEventListener('resize',resize);
+    document.querySelector('#search').oninput=draw; document.querySelector('#refresh').onclick=async()=>load(await fetch(`${API}/status`,{cache:'no-store'}).then(r=>r.json()),true); addEventListener('resize',resize);
     resize(); checkStatus(); setInterval(checkStatus,3000);
   </script>
 </body>

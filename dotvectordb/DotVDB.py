@@ -22,7 +22,8 @@ from dotvectordb.graph.type_indexer import TypeIndexer
 from dotvectordb.graph.graph_retriever import GraphRetriever
 from dotvectordb.graph.generate_global_desc import GlobalDescriptionGenerator
 from dotvectordb.graph.TempVectorSpace import AsyncTempVectorSpace
-from dotvectordb.web_interface import open_graph_interface
+from dotvectordb.sql_browser import open_sql_browser
+from dotvectordb.prompts.chatbot_prompts import ChatbotRetrievalDecision
 from dotvectordb.data_structures.path import PathManager
 import os
 from pathlib import Path
@@ -59,6 +60,7 @@ class DotVectorDB:
         self.verbose = verbose
         self.conn: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
+        self._sql_browser_server = None
     ############################################################
     #   Helper Functions For DotVDB                            # 
     ############################################################
@@ -100,6 +102,15 @@ class DotVectorDB:
     #   Functions For Opening and Closing DotVDB               # 
     ############################################################
     async def open(self):
+        if (
+            self._sql_browser_server is not None
+            and self._sql_browser_server.write_mode
+            and self._sql_browser_server.conn is not None
+        ):
+            raise RuntimeError(
+                "Close the write-mode SQL browser before reopening "
+                "DotVectorDB."
+            )
         self.conn = await aiosqlite.connect(self.path)
         def setup():
             try:
@@ -149,10 +160,14 @@ class DotVectorDB:
             chunks_sql = self.__read_schema_file("chunk.sql")
             entities_sql = self.__read_schema_file("entity.sql")
             relationships_sql = self.__read_schema_file("relationship.sql")
+            failure_log_sql = self.__read_schema_file("failure_log.sql")
+            chat_history_sql = self.__read_schema_file("chat_history.sql")
             async with self.lock:
                 await self.conn.executescript(chunks_sql)
                 await self.conn.executescript(entities_sql)
                 await self.conn.executescript(relationships_sql)
+                await self.conn.executescript(failure_log_sql)
+                await self.conn.executescript(chat_history_sql)
                 await self.conn.commit()
             if self.verbose:
                 print("Default schema initialized successfully.")
@@ -2946,4 +2961,59 @@ class DotVectorDB:
     #   Functions For Visualuzing DotVDB's Graphs              # 
     ############################################################
     async def view_live_graph(self):
-        await open_graph_interface(self)
+        """Launch the unified database browser with graph exploration available."""
+        return await self.open_sql_browser(port=8765)
+
+    async def open_sql_browser(
+        self,
+        write_mode=False,
+        port=8766,
+        host="127.0.0.1",
+        open_browser=True,
+        rag_functions=None,
+    ):
+        """Launch the unified SQL and graph browser."""
+        async def route_chat_message(prompt):
+            return await self.language_model.generate(
+                prompt,
+                structuredInput=ChatbotRetrievalDecision,
+            )
+
+        if write_mode and self.conn is not None:
+            raise RuntimeError(
+                "Close DotVectorDB before opening the SQL browser in write "
+                "mode so two writers cannot use the database simultaneously."
+            )
+        if (
+            self._sql_browser_server is not None
+            and self._sql_browser_server.conn is not None
+        ):
+            raise RuntimeError("The SQL browser is already running.")
+        self._sql_browser_server = await open_sql_browser(
+            database_path=self.path,
+            write_mode=write_mode,
+            port=port,
+            host=host,
+            open_browser=open_browser,
+            rag_functions=rag_functions,
+            generate_function=self.language_model.generate,
+            route_function=route_chat_message,
+        )
+        return self._sql_browser_server
+
+    async def view_sql_database(
+        self,
+        rag_functions=None,
+        write_mode=False,
+        port=8766,
+        host="127.0.0.1",
+        open_browser=True,
+    ):
+        """Launch the database UI, optionally with named RAG chat functions."""
+        return await self.open_sql_browser(
+            write_mode=write_mode,
+            port=port,
+            host=host,
+            open_browser=open_browser,
+            rag_functions=rag_functions,
+        )

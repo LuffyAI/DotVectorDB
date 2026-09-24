@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DotVectorDB Chat</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter,system-ui,sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; height: 100vh; color: #e6f5f7; background: #06131a; }
+    header { height: 66px; display: flex; align-items: center; gap: 14px; padding: 0 18px; border-bottom: 1px solid #19313e; background: #0a1b25; }
+    .mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #06202a; background: linear-gradient(135deg,#00b7c7,#63d8a5); font-weight: 900; }
+    h1 { margin: 0; font-size: 17px; }
+    .university { display: none; font-family: Georgia,serif; font-weight: 700; letter-spacing: .025em; text-transform: uppercase; }
+    .university-logo { display: none; width: 285px; height: 42px; object-fit: contain; object-position: left center; }
+    nav { display: flex; gap: 4px; }
+    nav a { padding: 7px 9px; border-radius: 7px; color: #8ca5ae; text-decoration: none; font-size: 12px; }
+    nav a:hover,nav a.active { color: #eaffff; background: #12303b; }
+    select { margin-left: auto; min-width: 190px; padding: 9px 12px; border: 1px solid #284957; border-radius: 8px; color: #e6f5f7; background: #071820; }
+    #theme { min-width: 105px; margin-left: 0; }
+    main { display: grid; grid-template-rows: minmax(0,1fr) auto; height: calc(100vh - 66px); width: min(900px,100%); margin: auto; }
+    #messages { overflow: auto; padding: 28px 20px; }
+    .welcome { padding: 50px 20px; color: #89a3ac; text-align: center; }
+    .message-row { display: flex; align-items: flex-start; gap: 11px; margin: 15px 0; }
+    .message-row.user-row { flex-direction: row-reverse; }
+    .avatar { flex: 0 0 34px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: #eaffff; background: #1a5661; font-size: 12px; font-weight: 900; box-shadow: 0 0 0 2px #31515b; }
+    .assistant-row .avatar { color: #062027; background: #63d8cf; }
+    .message { max-width: 78%; padding: 13px 15px; border-radius: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .user { color: #eaffff; background: #12505a; border-bottom-right-radius: 3px; }
+    .assistant { background: #0d2630; border: 1px solid #1d414c; border-bottom-left-radius: 3px; }
+    .error { color: #ffc0c5; border-color: #69303a; background: #32171d; }
+    .retrieval-note { display: block; margin-bottom: 9px; padding: 7px 9px; border-left: 2px solid #63d8cf; color: #83dcd9; background: #092129; font-size: 11px; font-weight: 700; white-space: normal; }
+    .retrieval-query { display: block; margin-top: 3px; color: #9eb5bc; font-weight: 400; }
+    form { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 16px 20px 22px; border-top: 1px solid #19313e; background: #081a22; }
+    textarea { min-height: 54px; max-height: 160px; resize: vertical; padding: 15px; border: 1px solid #28505c; border-radius: 11px; color: #efffff; background: #06131a; font: inherit; outline: none; }
+    textarea:focus { border-color: #18bdc5; }
+    button { align-self: end; height: 48px; padding: 0 20px; border: 0; border-radius: 10px; color: #052027; background: #63d8cf; font-weight: 800; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    #clear { height: auto; padding: 9px 12px; border: 1px solid #41616c; color: #b9cbd1; background: transparent; font-weight: 600; }
+    #clear:hover { color: #fff; border-color: #d47676; }
+    html[data-theme="light"] body { color: #17272e; background: #f3f7f8; }
+    html[data-theme="light"] header,html[data-theme="light"] form { border-color: #cadadd; background: #fff; }
+    html[data-theme="light"] select,html[data-theme="light"] textarea { color: #17272e; border-color: #b9cdd2; background: #fff; }
+    html[data-theme="light"] .assistant { border-color: #c9dadd; background: #fff; }
+    html[data-theme="light"] .user { background: #bde8e8; color: #12343b; }
+    html[data-theme="michigan"] body { background: #001f42; }
+    html[data-theme="michigan"] header,html[data-theme="michigan"] form { border-color: #31527a; background: #00274c; }
+    html[data-theme="michigan"] .mark { display: none; }
+    html[data-theme="michigan"] h1 { display: none; }
+    html[data-theme="michigan"] .university-logo { display: block; }
+    html[data-theme="michigan"] nav a:hover,html[data-theme="michigan"] nav a.active { color: #ffcb05; background: #123f70; }
+    html[data-theme="michigan"] select,html[data-theme="michigan"] textarea { border-color: #55749a; background: #001b38; }
+    html[data-theme="michigan"] button { color: #00274c; background: #ffcb05; }
+    html[data-theme="michigan"] #clear { color: #fff; border-color: #7595b7; background: transparent; }
+    html[data-theme="michigan"] .assistant { border-color: #31527a; background: #002f5f; }
+    html[data-theme="michigan"] main { width: 100%; background: #3d3f3f; }
+    html[data-theme="michigan"] #messages { width: min(930px,100%); margin: 0 auto; padding: 38px 28px; }
+    html[data-theme="michigan"] .welcome { color: #d6d6d6; }
+    html[data-theme="michigan"] .message { max-width: 86%; padding: 15px 18px; border-radius: 0; background: transparent; }
+    html[data-theme="michigan"] .message-row { width: 100%; }
+    html[data-theme="michigan"] .avatar { color: #00274c; background: #ffcb05; box-shadow: none; }
+    html[data-theme="michigan"] .user-row .avatar { color: #fff; background: #315f8f; }
+    html[data-theme="michigan"] .assistant { border: 0; border-left: 3px solid #ffcb05; }
+    html[data-theme="michigan"] .retrieval-note { color: #ffcb05; border-color: #ffcb05; background: #303435; }
+    html[data-theme="michigan"] .user { color: #fff; border: 0; border-left: 3px solid #7ba7d7; background: transparent; }
+    html[data-theme="michigan"] form { grid-template-columns: minmax(0,850px) auto; justify-content: center; background: #292a2a; }
+    html[data-theme="michigan"] form textarea { border-color: #31527a; background: #002f5f; }
+  </style>
+</head>
+<body>
+  <header><div class="mark">D</div><h1>DotVectorDB Chat</h1><img class="university-logo" src="/assets/michigan-logo-white.svg" alt="University of Michigan"><nav><a href="/">Home</a><a href="/sql">SQL</a><a href="/graph">Graph</a><a class="active" href="/chat">Chat</a></nav><select id="rag"></select><button id="clear" type="button">Clear chat</button><select id="theme" aria-label="Theme"><option value="dark">Dark</option><option value="light">Light</option><option value="michigan">Michigan</option></select></header>
+  <main><div id="messages"><div id="welcome" class="welcome">Choose a RAG function and ask a question about your database.</div></div><form id="form"><textarea id="message" placeholder="Ask your knowledge base…"></textarea><button id="send">Send</button></form></main>
+  <script>
+    const rag=document.querySelector('#rag'),messages=document.querySelector('#messages'),input=document.querySelector('#message'),send=document.querySelector('#send'),theme=document.querySelector('#theme'),savedTheme=localStorage.getItem('dotvdb-theme')||'dark';document.documentElement.dataset.theme=savedTheme;theme.value=savedTheme;theme.onchange=()=>{document.documentElement.dataset.theme=theme.value;localStorage.setItem('dotvdb-theme',theme.value);};
+    function addMessage(text,type){document.querySelector('#welcome')?.remove();const isUser=type==='user',row=document.createElement('div'),avatar=document.createElement('div'),item=document.createElement('div');row.className=`message-row ${isUser?'user-row':'assistant-row'}`;avatar.className='avatar';avatar.textContent=isUser?'You':'AI';item.className=`message ${type}`;item.textContent=text;row.append(avatar,item);messages.appendChild(row);messages.scrollTop=messages.scrollHeight;return item;}
+    async function loadFunctions(){const data=await fetch('/api/chat/status').then(response=>response.json());const retrievalOptions=data.functions.map(name=>`<option value="${encodeURIComponent(name)}">${name.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</option>`).join('');rag.innerHTML=`<option value="__none__">No retrieval</option>${retrievalOptions}`;send.disabled=!data.generation_enabled;input.disabled=!data.generation_enabled;if(!data.generation_enabled)rag.innerHTML='<option>No language model configured</option>';}
+    async function loadHistory(){const data=await fetch('/api/chat/history').then(response=>response.json());for(const message of data.messages)addMessage(message.content,message.role);}
+    document.querySelector('#clear').onclick=async()=>{if(!confirm('Clear all saved chat history?'))return;const response=await fetch('/api/chat/history',{method:'DELETE'});if(!response.ok){addMessage(await response.text(),'assistant error');return;}messages.innerHTML='<div id="welcome" class="welcome">Chat history cleared. Ask a new question whenever you are ready.</div>';};
+    document.querySelector('#form').onsubmit=async event=>{event.preventDefault();const text=input.value.trim();if(!text||send.disabled)return;const selectedFunction=decodeURIComponent(rag.value);addMessage(text,'user');input.value='';send.disabled=true;const waiting=addMessage(selectedFunction==='__none__'?'Thinking…':'Deciding whether retrieval is needed…','assistant');try{const response=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({function:selectedFunction,message:text})});if(!response.ok)throw new Error(await response.text());const data=await response.json();waiting.textContent='';if(data.needs_retrieval){const note=document.createElement('span'),query=document.createElement('span');note.className='retrieval-note';note.textContent=data.retrieval_performed?`Retrieved with ${data.rag_function}`:`Retrieval requested with ${data.rag_function}`;if(data.retrieval_query){query.className='retrieval-query';query.textContent=data.retrieval_query;note.appendChild(query);}waiting.appendChild(note);}waiting.appendChild(document.createTextNode(data.answer));}catch(error){waiting.textContent=error.message;waiting.classList.add('error');}finally{send.disabled=false;input.focus();}};
+    input.onkeydown=event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();document.querySelector('#form').requestSubmit();}};
+    Promise.all([loadFunctions(),loadHistory()]);
+  </script>
+</body>
+</html>
