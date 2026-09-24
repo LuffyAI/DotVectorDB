@@ -785,38 +785,45 @@ class DotVectorDB:
             traceback.print_exc()
             raise RuntimeError(f"Error in the extract_and_embed_entities2 function inside DotVectorDB: {e}")
 
-    async def extract_and_embed_entities3(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
-        self.__require_open_connection()
-        try:
-            await self.add_entity_types(entity_types)
-            entity_types = await self.get_entity_types()
-        except Exception as e:
-            traceback.print_exc()
-            raise RuntimeError(f"Error in the extract_and_embed_entities3 function inside DotVectorDB while adding entity types: {e}")
+    async def extract_and_embed_entities4(self, entity_types=None, async_cooldown=60, requests_per_minute=1000) -> None:
+            self.__require_open_connection()
+            try:
+                await self.add_entity_types(entity_types)
+                entity_types = await self.get_entity_types()
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the extract_and_embed_entities3 function inside DotVectorDB while adding entity types: {e}")
+    
+            try:
+                entity_indexer = EntityIndexer4(
+                    conn=self.conn,
+                    lock=self.lock,
+                    language_model=self.language_model.generate,
+                    embedding_model=self.embedding_model,
+                    hash_func=self.hashing_func.content_hash,
+                    entity_groups=entity_types,
+                    add_embedding_func=self.add_embedding
+                )
+                await entity_indexer.extract_entities_from_ingested_chunks(
+                    async_cooldown=async_cooldown,
+                    requests_per_minute=requests_per_minute,
+                    verbose=self.verbose
+                )
 
-        try:
-            entity_indexer = EntityIndexer3(
-                conn=self.conn,
-                lock=self.lock,
-                language_model=self.language_model.generate,
-                embedding_model=self.embedding_model,
-                hash_func=self.hashing_func.content_hash,
-                entity_groups=entity_types,
-                add_embedding_func=self.add_embedding
-            )
-            await entity_indexer.extract_entities_from_ingested_chunks(
-                async_cooldown=async_cooldown,
-                requests_per_minute=requests_per_minute,
-                verbose=self.verbose
-            )
-            await entity_indexer.embed_entities(
-                async_cooldown=async_cooldown,
-                requests_per_minute=requests_per_minute,
-                verbose=self.verbose
-            )
-        except Exception as e:
-            traceback.print_exc()
-            raise RuntimeError(f"Error in the extract_and_embed_entities3 function inside DotVectorDB: {e}")
+                await entity_indexer.fix_entities(
+                    async_cooldown=async_cooldown,
+                    requests_per_minute=requests_per_minute,
+                    verbose=self.verbose         
+               )                                                              
+
+                await entity_indexer.embed_entities(
+                    async_cooldown=async_cooldown,
+                    requests_per_minute=requests_per_minute,
+                    verbose=self.verbose
+                )
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(f"Error in the extract_and_embed_entities4 function inside DotVectorDB: {e}")
     ############################################################
     #   Function For Extracting and Embedding Relations        # 
     ############################################################
@@ -847,6 +854,38 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the extract_and_embed_relationships function inside DotVectorDB while extracting and embedding relationships: {e}")
+    async def extract_and_embed_relationships2(self, async_cooldown=60, requests_per_minute=1000) -> None:
+                self.__require_open_connection()
+                try:
+                    relationship_indexer = RelationshipIndexer3(
+                        conn=self.conn,
+                        lock=self.lock,
+                        language_model=self.language_model.generate,
+                        hash_func=self.hashing_func.content_hash,
+                        embedding_model=self.embedding_model,
+                        add_embedding_func=self.add_embedding
+                    )
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the extract_and_embed_relationships function inside DotVectorDB while initializing RelationshipIndexer: {e}")
+                try:
+                    await relationship_indexer.extract_relations_from_chunks(
+                        async_cooldown=async_cooldown,
+                        requests_per_minute=requests_per_minute,
+                        verbose=self.verbose
+                    )
+                    await relationship_indexer.fix_relationships(
+                        async_cooldown=async_cooldown,
+                        requests_per_minute=requests_per_minute,
+                        verbose=self.verbose
+                    )
+                    await relationship_indexer.embed_relationships(
+                        async_cooldown=async_cooldown,
+                        requests_per_minute=requests_per_minute,
+                        verbose=self.verbose)
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the extract_and_embed_relationships function inside DotVectorDB while extracting and embedding relationships: {e}")
     ############################################################
     #   Function For Generating Global Source Descriptions    #
     ############################################################
@@ -984,6 +1023,55 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
+    async def construct_GraphRAG3(self, input_document_list=None, entity_types=None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
+                # First, we ingest the documents into the database, which includes extracting text, chunking it, and adding embeddings.
+                try:
+                    self.__graph_construction_print("STEP ONE: Chunking & Embedding a Given Corpus")
+                    await self.ingest_documents(input_document_list=input_document_list,
+                                                async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while ingesting text chunks: {e}")
+                # Second, we extract, classify, and embed entities from the chunks.
+                try:
+                   self.__graph_construction_print("STEP TWO: Extracting, Classifying, and Embedding Entities")
+                   await self.extract_and_embed_entities4(entity_types=entity_types, async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while adding in the entities: {e}")
+    
+                 # Third, we extract relationships from the entities and add them to the database.
+                try:
+                    self.__graph_construction_print("STEP THREE: Extracting Relationships from the Ingested/Unprocessed Chunks")
+                    await self.extract_and_embed_relationships2(async_cooldown=async_cooldown, requests_per_minute=requests_per_minute)
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while adding in the relationships: {e}")
+    
+    
+                # Fourth, generate and save a global description for each source document.
+                try:
+                    self.__graph_construction_print("STEP FOUR: Generating a Global Description for the entity-relationship graph")
+                    await self.generate_global_descriptions(debug_mode=debug_mode)
+                except Exception as e:
+                            traceback.print_exc()
+                            raise RuntimeError(f"Error in the construct_GraphRAG function inside DotVectorDB while generating global descriptions: {e}")
+                # Fifth, we need to generate the graph representation of the database.
+                try:
+                    self.__graph_construction_print("STEP FIVE: Creating the Graph Representation of the Database")
+                    await self.graph_retriever.load_graph()
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while clustering entities: {e}")
+                # Lastly, we construct the BM25 index
+                try:
+                   self.__graph_construction_print("STEP SIX: Creating the BM25 Index")
+                   await self.create_BM25_index_for_table("chunk")
+                   await self.create_BM25_index_for_table("entity")
+                   await self.create_BM25_index_for_table("relationship")  
+                except Exception as e:
+                    traceback.print_exc()
+                    raise RuntimeError(f"Error in the construct_GraphRAG2 function inside DotVectorDB while creating the BM25 index: {e}")
     
     ############################################################
     #   Functions For DotVDB's Vector Ingestion + Search       # 
