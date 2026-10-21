@@ -546,12 +546,15 @@ class GraphRetriever():
         end_point,
         PathManager,
         k=10,
+        hop=3,
     ):
         """
         Precondition:
             - The graph is already loaded and is an igraph.Graph object.
         Retrieve the k shortest paths from the source node to a target edge.
         """
+        if isinstance(hop, bool) or not isinstance(hop, int) or hop < 0:
+            raise ValueError("hop must be a non-negative integer")
         # First, we need the corresponding igraph indices for the source, destination, and end_index ids.
         # Source index is the query's centroid
         # Dst index is the source node of the edge we're trying to reach
@@ -569,13 +572,17 @@ class GraphRetriever():
         # If no paths are found, then this means there were no paths from the centroid to the edge we wanted to reach.
         if not shortest_paths:
             return False
+        added_path = False
         for path in shortest_paths:
             complete_path = list(path)
             # We need to manually append the other endpoint so the path includes the edge we're trying to reach.
             if end_index not in complete_path:
                 complete_path.append(end_index)
+            if len(complete_path) - 1 > hop:
+                continue
             PathManager.build_and_add_path(graph, complete_path)
-        return True
+            added_path = True
+        return added_path
 
 #  async def weight_paths(self, starting_node_ids, accepted_node_types, intermediate_goal, terminal_goal, hop_limit=5):
     async def get_weighted_shortest_paths(
@@ -587,11 +594,14 @@ class GraphRetriever():
         end_point,
         PathManager,
         k=10,
+        hop=3,
     ):
         """
         Retrieve the k lowest-cost paths from the source node to a target edge
         using the query graph's calculated edge costs.
         """
+        if isinstance(hop, bool) or not isinstance(hop, int) or hop < 0:
+            raise ValueError("hop must be a non-negative integer")
         if "cost" not in graph.es.attributes():
             raise ValueError(
                 "The graph has no 'cost' edge weights. "
@@ -623,10 +633,13 @@ class GraphRetriever():
         if not shortest_paths:
             return False
 
+        added_path = False
         for path in shortest_paths:
             complete_path = list(path)
             if end_index not in complete_path:
                 complete_path.append(end_index)
+            if len(complete_path) - 1 > hop:
+                continue
             path_weight = 0.0
             for source_vertex, target_vertex in zip(
                 complete_path,
@@ -644,8 +657,9 @@ class GraphRetriever():
                 complete_path,
                 weight=path_weight,
             )
+            added_path = True
 
-        return True
+        return added_path
 
 #     async def bfs_weight_propagation(
 #         self,
@@ -736,7 +750,7 @@ class GraphRetriever():
 
 #         return surviving_relationship_ids, edge_entity_ids
 
-    async def weight_paths(self, starting_node_ids, accepted_node_types, intermediate_goal, terminal_goal, hop_limit=5):
+    async def weight_paths(self, starting_node_ids, accepted_node_types, intermediate_goal, terminal_goal, hop_limit=23):
         accepted_node_types = {
             str(entity_type).lower()
             for entity_type in (accepted_node_types or [])
@@ -881,6 +895,499 @@ class GraphRetriever():
             query_graph.es["cost"] = costs
 
             return query_graph, relationship_ids
+
+    # async def type_constrained_search_bfs(
+    #     self,
+    #     anchor_node,
+    #     ordered_entity_types,
+    # ):
+    #     """Return paths whose node types match the requested hop order."""
+    #     graph = self.graph
+    #     if graph is None:
+    #         raise ValueError("Graph is not loaded")
+    #     if not isinstance(ordered_entity_types, list):
+    #         raise TypeError("ordered_entity_types must be a list")
+    #     if not ordered_entity_types:
+    #         return [], []
+    #
+    #     normalized_entity_types = []
+    #     for index, entity_type in enumerate(ordered_entity_types):
+    #         if not isinstance(entity_type, str):
+    #             raise TypeError(
+    #                 f"Entity type at index {index} must be a string"
+    #             )
+    #         normalized_entity_type = entity_type.strip().casefold()
+    #         if not normalized_entity_type:
+    #             raise ValueError(
+    #                 f"Entity type at index {index} cannot be empty"
+    #             )
+    #         normalized_entity_types.append(normalized_entity_type)
+    #
+    #     anchor_vertex = await self.get_igraph_index(
+    #         entity_id=anchor_node,
+    #         graph=graph,
+    #     )
+    #     frontier = [
+    #         (
+    #             anchor_vertex,
+    #             [anchor_vertex],
+    #             [],
+    #         )
+    #     ]
+    #
+    #     for required_entity_type in normalized_entity_types:
+    #         next_frontier = []
+    #         for current_vertex, vertex_path, relation_path in frontier:
+    #             for edge_id in graph.incident(current_vertex, mode="all"):
+    #                 edge = graph.es[edge_id]
+    #                 neighbor_vertex = (
+    #                     edge.target
+    #                     if edge.source == current_vertex
+    #                     else edge.source
+    #                 )
+    #
+    #                 # Prevent cycles within an individual candidate path while
+    #                 # still allowing the same node to appear in other paths.
+    #                 if neighbor_vertex in vertex_path:
+    #                     continue
+    #
+    #                 neighbor_types = {
+    #                     str(entity_type).strip().casefold()
+    #                     for entity_type in (
+    #                         graph.vs[neighbor_vertex]["entity_type"] or []
+    #                     )
+    #                 }
+    #                 if required_entity_type not in neighbor_types:
+    #                     continue
+    #
+    #                 next_frontier.append(
+    #                     (
+    #                         neighbor_vertex,
+    #                         [*vertex_path, neighbor_vertex],
+    #                         [*relation_path, edge["relation_id"]],
+    #                     )
+    #                 )
+    #
+    #         if not next_frontier:
+    #             return [], []
+    #         frontier = next_frontier
+    #
+    #     entity_paths = [
+    #         [graph.vs[vertex_id]["name"] for vertex_id in vertex_path]
+    #         for _, vertex_path, _ in frontier
+    #     ]
+    #     relationship_id_paths = [
+    #         relation_path
+    #         for _, _, relation_path in frontier
+    #     ]
+    #     return entity_paths, relationship_id_paths
+
+    async def type_constrained_search_bfs(
+        self,
+        anchor_node,
+        ordered_entity_types,
+    ):
+        """Return the deepest frontier that satisfied the ordered type plan."""
+        graph = self.graph
+        if graph is None:
+            raise ValueError("Graph is not loaded")
+        if not isinstance(ordered_entity_types, list):
+            raise TypeError("ordered_entity_types must be a list of lists")
+        if not ordered_entity_types:
+            return {}, {}
+
+        normalized_types_by_hop = []
+        for hop_index, allowed_entity_types in enumerate(
+            ordered_entity_types,
+            start=1,
+        ):
+            if not isinstance(allowed_entity_types, list):
+                raise TypeError(
+                    f"Entity types for hop {hop_index} must be a list"
+                )
+            if not allowed_entity_types:
+                raise ValueError(
+                    f"Entity types for hop {hop_index} cannot be empty"
+                )
+
+            normalized_types = set()
+            for entity_type in allowed_entity_types:
+                if not isinstance(entity_type, str):
+                    raise TypeError(
+                        f"Every entity type for hop {hop_index} must be a string"
+                    )
+                normalized_entity_type = entity_type.strip().casefold()
+                if not normalized_entity_type:
+                    raise ValueError(
+                        f"Entity types for hop {hop_index} cannot contain "
+                        "an empty value"
+                    )
+                normalized_types.add(normalized_entity_type)
+            normalized_types_by_hop.append(normalized_types)
+
+        anchor_vertex = await self.get_igraph_index(
+            entity_id=anchor_node,
+            graph=graph,
+        )
+        frontier = [(anchor_vertex, [anchor_vertex], [])]
+        last_successful_frontier = []
+        completed_hops = 0
+
+        for allowed_types in normalized_types_by_hop:
+            next_frontier = []
+            for current_vertex, vertex_path, relation_path in frontier:
+                for edge_id in graph.incident(current_vertex, mode="all"):
+                    edge = graph.es[edge_id]
+                    neighbor_vertex = (
+                        edge.target
+                        if edge.source == current_vertex
+                        else edge.source
+                    )
+                    if neighbor_vertex in vertex_path:
+                        continue
+
+                    neighbor_types = {
+                        str(entity_type).strip().casefold()
+                        for entity_type in (
+                            graph.vs[neighbor_vertex]["entity_type"] or []
+                        )
+                    }
+                    if neighbor_types.isdisjoint(allowed_types):
+                        continue
+
+                    next_frontier.append(
+                        (
+                            neighbor_vertex,
+                            [*vertex_path, neighbor_vertex],
+                            [*relation_path, edge["relation_id"]],
+                        )
+                    )
+
+            if not next_frontier:
+                break
+            frontier = next_frontier
+            last_successful_frontier = next_frontier
+            completed_hops += 1
+
+        if not last_successful_frontier:
+            return {}, {}
+
+        hop_label = f"{completed_hops}_hop"
+        entity_paths_by_hop = {
+            hop_label: [
+                [graph.vs[vertex_id]["name"] for vertex_id in vertex_path]
+                for _, vertex_path, _ in last_successful_frontier
+            ]
+        }
+        relationship_id_paths_by_hop = {
+            hop_label: [
+                relation_path
+                for _, _, relation_path in last_successful_frontier
+            ]
+        }
+
+        return entity_paths_by_hop, relationship_id_paths_by_hop
+
+    async def weight_paths2(
+        self,
+        starting_node_ids,
+        accepted_node_types,
+        retrieval_rules,
+        hop_limit=5,
+        restrict_to_accepted_node_types=False,
+    ):
+        accepted_node_types = {
+            str(entity_type).lower()
+            for entity_type in (accepted_node_types or [])
+        }
+        graph = self.graph
+        if not starting_node_ids:
+            raise ValueError("starting_node_ids cannot be empty")
+        starting_vertices = [
+            await self.get_igraph_index(entity_id=starting_node_id)
+            for starting_node_id in starting_node_ids
+        ]
+
+        # Build the query graph from everything reachable within five hops
+        # of at least one starting node.
+        hop_limit = min(max(int(hop_limit), 0), 5)
+        starting_distances = graph.distances(
+            source=starting_vertices,
+            mode="all",
+        )
+        vertex_hops = [
+            min(distances[vertex_id] for distances in starting_distances)
+            for vertex_id in range(graph.vcount())
+        ]
+        query_vertex_ids = []
+        for vertex_id, hop in enumerate(vertex_hops):
+            if hop > hop_limit:
+                continue
+            if restrict_to_accepted_node_types and not any(
+                str(entity_type).lower() in accepted_node_types
+                for entity_type in graph.vs[vertex_id]["entity_type"]
+            ):
+                continue
+            query_vertex_ids.append(vertex_id)
+        query_graph = graph.induced_subgraph(query_vertex_ids)
+        relationship_ids_by_hop = {
+            hop: [] for hop in range(1, hop_limit + 1)
+        }
+
+        relationship_hops = []
+        original_vertex_ids = {
+            vertex["name"]: vertex.index for vertex in graph.vs
+        }
+        for edge in query_graph.es:
+            source_id = original_vertex_ids[
+                query_graph.vs[edge.source]["name"]
+            ]
+            target_id = original_vertex_ids[
+                query_graph.vs[edge.target]["name"]
+            ]
+            relationship_hop = max(
+                vertex_hops[source_id],
+                vertex_hops[target_id],
+            )
+            relationship_hops.append(int(relationship_hop))
+            if 1 <= relationship_hop <= hop_limit:
+                relationship_ids_by_hop[int(relationship_hop)].append(
+                    edge["relation_id"]
+                )
+        query_graph.es["hop"] = relationship_hops
+
+        relationship_ids = [
+            relationship_id
+            for hop_relationship_ids in relationship_ids_by_hop.values()
+            for relationship_id in hop_relationship_ids
+        ]
+
+        def require_open_connection():
+            if self.conn is None:
+                raise RuntimeError("Database connection is not open")
+
+        async with TempVectorSpacePathWeights(
+            conn=self.conn,
+            lock=self.lock,
+            relationship_ids=relationship_ids,
+            conn_check_func=require_open_connection,
+        ) as path_vector_space:
+            if not isinstance(retrieval_rules, dict):
+                raise TypeError("retrieval_rules must be a dictionary")
+            query_templates = retrieval_rules.get("query_templates")
+            if not isinstance(query_templates, list) or not query_templates:
+                raise ValueError(
+                    "retrieval_rules must contain a non-empty "
+                    "'query_templates' list"
+                )
+
+            known_values = retrieval_rules.get("known_values", [])
+            if not isinstance(known_values, list):
+                raise TypeError("retrieval_rules['known_values'] must be a list")
+
+            entity_names_by_id = {
+                str(vertex["name"]): vertex["entity_name"]
+                for vertex in query_graph.vs
+            }
+            seen_node_names = {
+                str(value).strip().casefold()
+                for value in known_values
+                if str(value).strip()
+            }
+            seen_node_ids = {
+                str(starting_node_id)
+                for starting_node_id in starting_node_ids
+            }
+            variable_bindings = {}
+            retrieval_weights = {}
+            pending_templates = list(enumerate(query_templates))
+
+            while pending_templates:
+                made_progress = False
+                next_pending_templates = []
+
+                for template_index, template in pending_templates:
+                    if not isinstance(template, dict):
+                        raise TypeError(
+                            "Each retrieval query template must be a dictionary; "
+                            f"item {template_index} is "
+                            f"{type(template).__name__}."
+                        )
+                    requires = template.get("requires", [])
+                    if not isinstance(requires, list):
+                        raise TypeError(
+                            f"query_templates[{template_index}]['requires'] "
+                            "must be a list"
+                        )
+                    if any(
+                        requirement not in variable_bindings
+                        for requirement in requires
+                    ):
+                        next_pending_templates.append(
+                            (template_index, template)
+                        )
+                        continue
+
+                    query_template = template.get("query_template")
+                    binds = template.get("binds")
+                    if not isinstance(query_template, str) or not query_template:
+                        raise ValueError(
+                            f"query_templates[{template_index}] requires a "
+                            "non-empty 'query_template' string"
+                        )
+                    if not isinstance(binds, str) or not binds:
+                        raise ValueError(
+                            f"query_templates[{template_index}] requires a "
+                            "non-empty 'binds' string"
+                        )
+
+                    rendered_template = query_template
+                    for variable_name, values in variable_bindings.items():
+                        rendered_template = rendered_template.replace(
+                            variable_name,
+                            ", ".join(values),
+                        )
+
+                    retrieval_prompt = "\n".join(
+                        (
+                            "Query comprehension:",
+                            str(retrieval_rules.get("query_comprehension", "")),
+                            "Known values:",
+                            json.dumps(known_values, ensure_ascii=False),
+                            "Bound variables:",
+                            json.dumps(
+                                variable_bindings,
+                                ensure_ascii=False,
+                            ),
+                            "Query template:",
+                            rendered_template,
+                            "Purpose:",
+                            str(template.get("purpose", "")),
+                        )
+                    )
+                    retrieval_results, _ = await self.vector_search(
+                        query=retrieval_prompt,
+                        table="relationship",
+                        embedding_table=path_vector_space.embedding_table,
+                        top_k=40,
+                    )
+
+                    bound_values = []
+                    bound_value_keys = set()
+                    for result in retrieval_results:
+                        relationship_id = str(result["relation_id"])
+                        similarity_score = result["similarity_score"]
+                        retrieval_weights[relationship_id] = max(
+                            retrieval_weights.get(relationship_id, 0.0),
+                            similarity_score,
+                        )
+
+                        for endpoint_key in (
+                            "src_entity_id",
+                            "dst_entity_id",
+                        ):
+                            endpoint_id = str(result[endpoint_key])
+                            endpoint_name = entity_names_by_id.get(endpoint_id)
+                            if endpoint_name is None:
+                                continue
+                            normalized_name = endpoint_name.strip().casefold()
+                            if (
+                                endpoint_id in seen_node_ids
+                                or normalized_name in seen_node_names
+                                or normalized_name in bound_value_keys
+                            ):
+                                continue
+                            bound_values.append(endpoint_name)
+                            bound_value_keys.add(normalized_name)
+
+                    variable_bindings[binds] = bound_values
+                    seen_node_names.update(bound_value_keys)
+                    seen_node_ids.update(
+                        str(result[endpoint_key])
+                        for result in retrieval_results
+                        for endpoint_key in (
+                            "src_entity_id",
+                            "dst_entity_id",
+                        )
+                        if entity_names_by_id.get(str(result[endpoint_key]))
+                        in bound_values
+                    )
+                    made_progress = True
+
+                if not made_progress:
+                    unresolved = [
+                        template.get("binds", f"template[{template_index}]")
+                        for template_index, template in next_pending_templates
+                    ]
+                    raise ValueError(
+                        "Retrieval query template dependencies could not be "
+                        f"resolved: {unresolved}."
+                    )
+                pending_templates = next_pending_templates
+
+            query_graph.es["retrieval_weight"] = [
+                retrieval_weights.get(str(edge["relation_id"]), 0.0)
+                for edge in query_graph.es
+            ]
+
+            source_type_matches = []
+            target_type_matches = []
+            type_weights = []
+            relevance_weights = []
+            costs = []
+
+            for edge in query_graph.es:
+                source_type_match = float(any(
+                    str(entity_type).lower() in accepted_node_types
+                    for entity_type in query_graph.vs[edge.source]["entity_type"]
+                ))
+                target_type_match = float(any(
+                    str(entity_type).lower() in accepted_node_types
+                    for entity_type in query_graph.vs[edge.target]["entity_type"]
+                ))
+                semantic_weight = edge["retrieval_weight"]
+                type_weight = (
+                    source_type_match + target_type_match
+                ) / 2.0
+                relevance_weight = (
+                    0.85 * semantic_weight
+                    + 0.15 * type_weight
+                )
+
+                source_type_matches.append(source_type_match)
+                target_type_matches.append(target_type_match)
+                type_weights.append(type_weight)
+                relevance_weights.append(relevance_weight)
+                costs.append(1.0 - relevance_weight)
+
+            query_graph.es["source_type_match"] = source_type_matches
+            query_graph.es["target_type_match"] = target_type_matches
+            query_graph.es["type_weight"] = type_weights
+            query_graph.es["relevance_weight"] = relevance_weights
+            query_graph.es["cost"] = costs
+
+            return query_graph, relationship_ids
+
+    async def weight_paths3(
+        self,
+        starting_node_ids,
+        accepted_node_types,
+        retrieval_rules,
+        hop_limit=5,
+    ):
+        """Weight paths using only nodes of the accepted entity types."""
+        if not accepted_node_types:
+            raise ValueError(
+                "accepted_node_types cannot be empty for weight_paths3"
+            )
+        return await self.weight_paths2(
+            starting_node_ids=starting_node_ids,
+            accepted_node_types=accepted_node_types,
+            retrieval_rules=retrieval_rules,
+            hop_limit=hop_limit,
+            restrict_to_accepted_node_types=True,
+        )
+
 
     async def bfs_weight_propagation(
         self,

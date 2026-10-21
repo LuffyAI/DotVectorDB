@@ -13,6 +13,7 @@ class OpenRouterAgent(LanguageModel):
         max_tokens: int = int(os.getenv("OPENROUTER_LLM_MAX_TOKENS", 4096)),
         Tokenizer: str = os.getenv("OPENROUTER_LLM_TOKENIZER", "gpt-4o"),
     ) -> None:
+        print("Using OpenRouter LLM model:", model_name, "with max tokens:", max_tokens)
         super().__init__(
             model_name=model_name,
             api_key=api_key,
@@ -47,6 +48,12 @@ class OpenRouterAgent(LanguageModel):
                                 temperature=0.0,
                                 frequency_penalty=0,    
                                 presence_penalty=0,
+                                extra_body={
+                                    "provider": {
+                                    "require_parameters": True,
+                                    "allow_fallbacks": True
+                                }
+                                                                },
                                 n=1,
                                 response_format=response_format,
                                 seed=123456,
@@ -62,13 +69,19 @@ class OpenRouterAgent(LanguageModel):
                 response = await self.client.beta.chat.completions.parse(   
                                 model=self.model_name,
                                 top_p=1,
+                                max_tokens=self._max_tokens,
                                 temperature=0.0,
                                 frequency_penalty=0,    
                                 presence_penalty=0,
                                 n=1,
                                 response_format=FinalResponse,
+                                extra_body={
+                                "provider": {
+                                    "require_parameters": True,
+                                    "allow_fallbacks": True
+                                }
+                                },
                                 seed=123456,
-
                                 messages=[
                                     {"role": "system", "content": "You are a helpful assistant that helps people find information."},
                                     {"role": "user", "content": f"{prompt}"}
@@ -76,5 +89,10 @@ class OpenRouterAgent(LanguageModel):
                 )
                 llm_response = response.choices[0].message.content
                 json_response = json.loads(llm_response)
-            tokens = self.tokenize(llm_response)
-            return json_response, len(tokens)
+            return (
+                      json_response,
+                      response.usage.total_tokens,
+                      response.usage.prompt_tokens,
+                      response.usage.completion_tokens,
+                  )
+          

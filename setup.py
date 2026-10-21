@@ -1,5 +1,18 @@
 from pathlib import Path
 from setuptools import find_packages, setup
+from setuptools.command.bdist_wheel import bdist_wheel
+
+
+class PlatformWheel(bdist_wheel):
+    """Tag wheels as platform-specific because they bundle ``vec1.so``."""
+
+    def finalize_options(self):
+        super().finalize_options()
+        self.root_is_pure = False
+
+    def get_tag(self):
+        _, _, platform_tag = super().get_tag()
+        return "py3", "none", platform_tag
 
 root = Path(__file__).parent
 
@@ -25,10 +38,12 @@ setup(
     # Minimum supported Python version
     python_requires=">=3.9",
     include_package_data=True,
+    cmdclass={"bdist_wheel": PlatformWheel},
 
     package_data={
         "dotvectordb": [
             "compiled_vec1/vec1.so",
+            "compiled_vec1/vec1_gl.so",
             "schema/*.sql",
             "web_interface/*.html",
             "sql_browser/*.html",
@@ -51,6 +66,7 @@ setup(
         "python-docx==1.2.0",
         "python-pptx==1.0.2",
         "openpyxl==3.1.5",
+        "pydantic>=2.0,<3.0",
     ],
 
     classifiers=[

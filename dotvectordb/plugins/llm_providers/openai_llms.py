@@ -76,5 +76,9 @@ class OpenAiAgent(LanguageModel):
             )
             llm_response = response.choices[0].message.content
             json_response = json.loads(llm_response)
-        tokens = response.usage.total_tokens
-        return json_response, tokens
+        return (
+            json_response,
+            response.usage.total_tokens,
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        )

@@ -940,276 +940,504 @@ class RelationshipIndexer:
         return entity_id_to_local_id, prompt_entities
 
     async def enrich_custom_relationship_group(
-        self,
-        relationships,
-        chunk_content,
-        requirements,
-        entity_id_to_local_id,
-        prompt_entities,
-    ):
-        """Enrich relationships from one chunk with identical requirements."""
-        (
-            needs_descriptions,
-            needs_questions,
-            needs_keywords,
-            needs_weights,
-        ) = requirements
-        prompt_template, enrichment_model = (
-            await prepare_relationship_enrichment_prompt_sections(
-                needs_descriptions=needs_descriptions,
-                needs_questions=needs_questions,
-                needs_keywords=needs_keywords,
-                needs_weights=needs_weights,
-            )
-        )
-        local_id_to_relationship = {
-            local_relationship_id: relationship
-            for local_relationship_id, relationship in enumerate(
-                relationships,
-                start=1,
-            )
-        }
-        prompt_relationships = {
-            local_relationship_id: {
-                "src_entity_id": entity_id_to_local_id[
-                    relationship["src_entity_id"]
-                ],
-                "dst_entity_id": entity_id_to_local_id[
-                    relationship["dst_entity_id"]
-                ],
-            }
-            for local_relationship_id, relationship
-            in local_id_to_relationship.items()
-        }
-        prompt = prompt_template.format(
-            language=self.summary_language,
-            entities=json.dumps(
-                prompt_entities,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            relationships=json.dumps(
-                prompt_relationships,
-                ensure_ascii=False,
-                indent=2,
-            ),
-            chunk=chunk_content,
-            entity_example=ENTITY_EXAMPLE,
-            input_example=INPUT_EXAMPLE,
-            output_example=OUTPUT_EXAMPLE,
-        )
-        response = await self.language_model(
-            prompt,
-            structuredInput=enrichment_model,
-        )
-        returned_relationships = response[0]["relationships"]
-        returned_local_ids = [
-            relationship["local_relationship_id"]
-            for relationship in returned_relationships
-        ]
-        expected_local_ids = set(local_id_to_relationship)
-        if (
-            len(returned_relationships) != len(local_id_to_relationship)
-            or len(returned_local_ids) != len(set(returned_local_ids))
-            or set(returned_local_ids) != expected_local_ids
+            self,
+            relationships,
+            chunk_content,
+            requirements,
+            entity_id_to_local_id,
+            prompt_entities,
         ):
-            raise ValueError(
-                "Relationship enrichment response IDs did not match the "
-                f"requested local IDs. Expected {sorted(expected_local_ids)}, "
-                f"received {returned_local_ids}."
+            """Enrich relationships from one chunk with identical requirements."""
+            (
+                needs_descriptions,
+                needs_questions,
+                needs_keywords,
+                needs_weights,
+            ) = requirements
+            prompt_template, enrichment_model = (
+                await prepare_relationship_enrichment_prompt_sections(
+                    needs_descriptions=needs_descriptions,
+                    needs_questions=needs_questions,
+                    needs_keywords=needs_keywords,
+                    needs_weights=needs_weights,
+                )
             )
-
-        enriched_relationships = []
-        for returned_relationship in returned_relationships:
-            local_relationship_id = returned_relationship[
-                "local_relationship_id"
+            local_id_to_relationship = {
+                local_relationship_id: relationship
+                for local_relationship_id, relationship in enumerate(
+                    relationships,
+                    start=1,
+                )
+            }
+            prompt_relationships = [
+                {
+                    "rel_id": local_relationship_id,
+                    "src_entity_id": entity_id_to_local_id[
+                        relationship["src_entity_id"]
+                    ],
+                    "dst_entity_id": entity_id_to_local_id[
+                        relationship["dst_entity_id"]
+                    ],
+                }
+                for local_relationship_id, relationship
+                in local_id_to_relationship.items()
             ]
-            enriched_relationship = dict(
-                local_id_to_relationship[local_relationship_id]
+            prompt = prompt_template.format(
+                language=self.summary_language,
+                entities=json.dumps(
+                    prompt_entities,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                relationships=json.dumps(
+                    prompt_relationships,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                chunk=chunk_content,
+                entity_example=ENTITY_EXAMPLE,
+                input_example=INPUT_EXAMPLE,
+                output_example=OUTPUT_EXAMPLE,
             )
-            if needs_descriptions:
-                description = returned_relationship[
-                    "relation_description"
-                ].strip()
-                if not description:
-                    raise ValueError(
-                        "Generated relationship description cannot be empty "
-                        f"for local relationship {local_relationship_id}."
-                    )
-                enriched_relationship["relation_description"] = description
-            if needs_questions:
-                enriched_relationship["questions"] = returned_relationship[
-                    "questions"
-                ]
-            if needs_keywords:
-                enriched_relationship["keywords"] = returned_relationship[
-                    "keywords"
-                ]
-            if needs_weights:
-                enriched_relationship["weight"] = returned_relationship[
-                    "weight"
-                ]
-            enriched_relationships.append(enriched_relationship)
+            response = await self.language_model(
+                prompt,
+                structuredInput=enrichment_model,
+            )
+            returned_relationships = response[0]["relationships"]
+            returned_local_ids = [
+                relationship["local_relationship_id"]
+                for relationship in returned_relationships
+            ]
+            expected_local_ids = set(local_id_to_relationship)
+            if (
+                len(returned_relationships) != len(local_id_to_relationship)
+                or len(returned_local_ids) != len(set(returned_local_ids))
+                or set(returned_local_ids) != expected_local_ids
+            ):
+                raise ValueError(
+                    "Relationship enrichment response IDs did not match the "
+                    f"requested local IDs. Expected {sorted(expected_local_ids)}, "
+                    f"received {returned_local_ids}."
+                )
 
-        return enriched_relationships, response[1]
+            enriched_relationships = []
+            for returned_relationship in returned_relationships:
+                local_relationship_id = returned_relationship[
+                    "local_relationship_id"
+                ]
+                enriched_relationship = dict(
+                    local_id_to_relationship[local_relationship_id]
+                )
+                if needs_descriptions:
+                    description = returned_relationship[
+                        "relation_description"
+                    ].strip()
+                    if not description:
+                        raise ValueError(
+                            "Generated relationship description cannot be empty "
+                            f"for local relationship {local_relationship_id}."
+                        )
+                    enriched_relationship["relation_description"] = description
+                if needs_questions:
+                    enriched_relationship["questions"] = returned_relationship[
+                        "questions"
+                    ]
+                if needs_keywords:
+                    enriched_relationship["keywords"] = returned_relationship[
+                        "keywords"
+                    ]
+                if needs_weights:
+                    enriched_relationship["weight"] = returned_relationship[
+                        "weight"
+                    ]
+                enriched_relationships.append(enriched_relationship)
+
+            return enriched_relationships, response[1]
 
     async def save_custom_relationships_for_chunk(
-        self,
-        chunk_id,
-        relationships,
-        llm_token_totals,
-    ):
-        """Atomically save all custom relationships assigned to one chunk."""
-        embedding_model_hash = str(
-            self.hash_func(self.embedding_model.model_name)
-        )
-        new_relationships_added = 0
+            self,
+            chunk_id,
+            relationships,
+            llm_token_totals,
+        ):
+            """Atomically save all custom relationships assigned to one chunk."""
+            embedding_model_hash = str(
+                self.hash_func(self.embedding_model.model_name)
+            )
+            new_relationships_added = 0
 
-        async with self.lock:
-            try:
-                for relationship in relationships:
-                    relationship_record = {
-                        "src_entity_id": relationship["src_entity_id"],
-                        "dst_entity_id": relationship["dst_entity_id"],
-                        "relation_description": relationship[
-                            "relation_description"
-                        ],
-                        "questions": relationship["questions"],
-                        "keywords": relationship["keywords"],
-                        "weight": relationship["weight"],
-                    }
-                    tokens = len(
-                        self.embedding_model.tokenize(
-                            json.dumps(
-                                relationship_record,
-                                ensure_ascii=False,
-                            )
-                        )
-                    )
-                    cursor = await self.conn.execute(
-                        """
-                        SELECT relation_description, questions, keywords,
-                               weight, tokens
-                        FROM relationship
-                        WHERE relation_id = ?
-                        """,
-                        (relationship["relation_id"],),
-                    )
-                    existing_relationship = await cursor.fetchone()
-                    await cursor.close()
-
-                    if existing_relationship is None:
-                        is_summarized = (
-                            len(
-                                self.embedding_model.tokenize(
-                                    relationship["relation_description"]
+            async with self.lock:
+                try:
+                    for relationship in relationships:
+                        relationship_record = {
+                            "src_entity_id": relationship["src_entity_id"],
+                            "dst_entity_id": relationship["dst_entity_id"],
+                            "relation_description": relationship[
+                                "relation_description"
+                            ],
+                            "questions": relationship["questions"],
+                            "keywords": relationship["keywords"],
+                            "weight": relationship["weight"],
+                        }
+                        tokens = len(
+                            self.embedding_model.tokenize(
+                                json.dumps(
+                                    relationship_record,
+                                    ensure_ascii=False,
                                 )
                             )
-                            <= self.max_entity_relation_description_token_size
                         )
-                        await self.conn.execute(
+                        cursor = await self.conn.execute(
                             """
-                            INSERT INTO relationship (
-                                relation_id,
-                                src_entity_id,
-                                dst_entity_id,
-                                relation_description,
-                                questions,
-                                keywords,
-                                weight,
-                                embedding_model_id,
-                                tokens,
-                                is_summarized
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                relationship["relation_id"],
-                                relationship["src_entity_id"],
-                                relationship["dst_entity_id"],
-                                relationship["relation_description"],
-                                json.dumps(relationship["questions"]),
-                                json.dumps(relationship["keywords"]),
-                                relationship["weight"],
-                                embedding_model_hash,
-                                tokens,
-                                is_summarized,
-                            ),
-                        )
-                        new_relationships_added += 1
-                    else:
-                        (
-                            old_description,
-                            old_questions_json,
-                            old_keywords_json,
-                            old_weight,
-                            old_tokens,
-                        ) = existing_relationship
-                        combined_description = (
-                            f"{old_description}<SEP>"
-                            f"{relationship['relation_description']}"
-                        )
-                        combined_questions = (
-                            json.loads(old_questions_json)
-                            + relationship["questions"]
-                        )
-                        combined_keywords = (
-                            json.loads(old_keywords_json)
-                            + relationship["keywords"]
-                        )
-                        combined_weight = old_weight + relationship["weight"]
-                        is_summarized = (
-                            len(
-                                self.embedding_model.tokenize(
-                                    combined_description
-                                )
-                            )
-                            <= self.max_entity_relation_description_token_size
-                        )
-                        await self.conn.execute(
-                            """
-                            UPDATE relationship
-                            SET relation_description = ?,
-                                questions = ?,
-                                keywords = ?,
-                                weight = ?,
-                                tokens = ?,
-                                is_summarized = ?
+                            SELECT relation_description, questions, keywords,
+                                weight, tokens
+                            FROM relationship
                             WHERE relation_id = ?
                             """,
+                            (relationship["relation_id"],),
+                        )
+                        existing_relationship = await cursor.fetchone()
+                        await cursor.close()
+
+                        if existing_relationship is None:
+                            is_summarized = (
+                                len(
+                                    self.embedding_model.tokenize(
+                                        relationship["relation_description"]
+                                    )
+                                )
+                                <= self.max_entity_relation_description_token_size
+                            )
+                            await self.conn.execute(
+                                """
+                                INSERT INTO relationship (
+                                    relation_id,
+                                    src_entity_id,
+                                    dst_entity_id,
+                                    relation_description,
+                                    questions,
+                                    keywords,
+                                    weight,
+                                    embedding_model_id,
+                                    tokens,
+                                    is_summarized
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    relationship["relation_id"],
+                                    relationship["src_entity_id"],
+                                    relationship["dst_entity_id"],
+                                    relationship["relation_description"],
+                                    json.dumps(relationship["questions"]),
+                                    json.dumps(relationship["keywords"]),
+                                    relationship["weight"],
+                                    embedding_model_hash,
+                                    tokens,
+                                    is_summarized,
+                                ),
+                            )
+                            new_relationships_added += 1
+                        else:
                             (
-                                combined_description,
-                                json.dumps(combined_questions),
-                                json.dumps(combined_keywords),
-                                combined_weight,
-                                old_tokens + tokens,
-                                is_summarized,
-                                relationship["relation_id"],
-                            ),
+                                old_description,
+                                old_questions_json,
+                                old_keywords_json,
+                                old_weight,
+                                old_tokens,
+                            ) = existing_relationship
+                            description_segments = [
+                                description.strip()
+                                for description in (
+                                    old_description.split("<SEP>")
+                                    + relationship[
+                                        "relation_description"
+                                    ].split("<SEP>")
+                                )
+                                if description.strip()
+                            ]
+                            deduplicated_segments = []
+                            seen_description_hashes = set()
+                            for description in description_segments:
+                                normalized_description = " ".join(
+                                    description.split()
+                                ).casefold()
+                                description_hash = self.hash_func(
+                                    normalized_description
+                                )
+                                if description_hash in seen_description_hashes:
+                                    continue
+                                seen_description_hashes.add(description_hash)
+                                deduplicated_segments.append(description)
+                            combined_description = "<SEP>".join(
+                                deduplicated_segments
+                            )
+
+                            if self.hash_func(
+                                old_description
+                            ) != self.hash_func(combined_description):
+                                combined_questions = (
+                                    json.loads(old_questions_json)
+                                    + relationship["questions"]
+                                )
+                                combined_keywords = (
+                                    json.loads(old_keywords_json)
+                                    + relationship["keywords"]
+                                )
+                                combined_weight = (
+                                    old_weight + relationship["weight"]
+                                )
+                                is_summarized = (
+                                    len(
+                                        self.embedding_model.tokenize(
+                                            combined_description
+                                        )
+                                    )
+                                    <= self.max_entity_relation_description_token_size
+                                )
+                                await self.conn.execute(
+                                    """
+                                    UPDATE relationship
+                                    SET relation_description = ?,
+                                        questions = ?,
+                                        keywords = ?,
+                                        weight = ?,
+                                        tokens = ?,
+                                        is_summarized = ?
+                                    WHERE relation_id = ?
+                                    """,
+                                    (
+                                        combined_description,
+                                        json.dumps(combined_questions),
+                                        json.dumps(combined_keywords),
+                                        combined_weight,
+                                        old_tokens + tokens,
+                                        is_summarized,
+                                        relationship["relation_id"],
+                                    ),
+                                )
+
+                        await self.conn.execute(
+                            """
+                            INSERT OR IGNORE INTO chunk_to_relationship_mapping
+                            (chunk_id, relation_id) VALUES (?, ?)
+                            """,
+                            (chunk_id, relationship["relation_id"]),
                         )
 
+                    for llm_tokens in llm_token_totals:
+                        await self.save_input_and_output_tokens_for_llm(llm_tokens)
                     await self.conn.execute(
                         """
-                        INSERT OR IGNORE INTO chunk_to_relationship_mapping
-                        (chunk_id, relation_id) VALUES (?, ?)
+                        UPDATE chunk
+                        SET are_relations_extracted = 1
+                        WHERE chunk_id = ?
                         """,
-                        (chunk_id, relationship["relation_id"]),
+                        (chunk_id,),
                     )
+                    await self.conn.commit()
+                    return new_relationships_added
+                except Exception:
+                    await self.conn.rollback()
+                    raise
 
-                for llm_tokens in llm_token_totals:
-                    await self.save_input_and_output_tokens_for_llm(llm_tokens)
-                await self.conn.execute(
-                    """
-                    UPDATE chunk
-                    SET are_relations_extracted = 1
-                    WHERE chunk_id = ?
-                    """,
-                    (chunk_id,),
-                )
-                await self.conn.commit()
-                return new_relationships_added
-            except Exception:
-                await self.conn.rollback()
-                raise
+    # async def ingest_custom_relationships_from_ingested_chunks(
+    #     self,
+    #     custom_relationships_json,
+    #     async_cooldown=60,
+    #     requests_per_minute=1000,
+    #     verbose=True,
+    # ):
+    #     if not self.conn:
+    #         raise RuntimeError("Database connection is not established")
+    #     if not isinstance(custom_relationships_json, list):
+    #         raise TypeError("custom_relationships_json must be a list")
+    #     if requests_per_minute <= 0:
+    #         raise ValueError("requests_per_minute must be greater than 0")
+    #     if async_cooldown <= 0:
+    #         raise ValueError("async_cooldown must be greater than 0")
+
+    #     relationships_by_chunk = {}
+    #     for relationship in custom_relationships_json:
+    #         chunk_id = relationship["chunk_id"]
+    #         if isinstance(chunk_id, bool) or not isinstance(chunk_id, int):
+    #             raise TypeError(
+    #                 "Custom relationship chunk_id values must be "
+    #                 "SQLite-compatible integers; got "
+    #                 f"{chunk_id!r} ({type(chunk_id).__name__})."
+    #             )
+    #         relationships_by_chunk.setdefault(
+    #             chunk_id,
+    #             [],
+    #         ).append(relationship)
+
+    #     async with self.lock:
+    #         cursor = await self.conn.execute(
+    #             "SELECT chunk_id, content FROM chunk"
+    #         )
+    #         persisted_chunks = {
+    #             row[0]: row[1] for row in await cursor.fetchall()
+    #         }
+    #         await cursor.close()
+    #     persisted_chunk_ids = set(persisted_chunks)
+    #     unmatched_chunk_ids = set(relationships_by_chunk) - persisted_chunk_ids
+    #     if unmatched_chunk_ids:
+    #         raise ValueError(
+    #             "Custom relationships reference chunk IDs that are not present "
+    #             f"in SQLite: {sorted(unmatched_chunk_ids)}. This usually "
+    #             "indicates a generated chunk-ID type or hash mismatch."
+    #         )
+    #     hash_mismatches = {
+    #         chunk_id: self.hash_func(persisted_chunks[chunk_id])
+    #         for chunk_id in relationships_by_chunk
+    #         if self.hash_func(persisted_chunks[chunk_id]) != chunk_id
+    #     }
+    #     if hash_mismatches:
+    #         raise ValueError(
+    #             "Custom relationship chunk IDs do not match the hashes "
+    #             "recomputed from SQLite chunk content: "
+    #             f"{hash_mismatches}."
+    #         )
+
+    #     max_tries = 4
+    #     current_try = 0
+    #     while current_try < max_tries:
+    #         chunks = await self.get_chunks_waiting_for_relation_extraction()
+    #         if not chunks:
+    #             break
+    #         current_try += 1
+
+    #         if verbose:
+    #             print(
+    #                 f"Found {len(chunks)} chunks waiting for custom "
+    #                 "relationship ingestion."
+    #             )
+
+    #         progress = tqdm_asyncio(
+    #             total=None,
+    #             desc="Adding Pre-Defined Relationships",
+    #             bar_format=(
+    #                 "{desc}: {n} relationships [{elapsed}, {rate_fmt}]"
+    #             ),
+    #         )
+
+    #         async def ingest_chunk(chunk):
+    #             chunk_content = chunk[0]
+    #             chunk_id = self.hash_func(chunk_content)
+    #             custom_relationships = relationships_by_chunk.get(chunk_id, [])
+    #             if chunk_id in relationships_by_chunk and not custom_relationships:
+    #                 raise RuntimeError(
+    #                     f"Chunk '{chunk_id}' was expected to contain supplied "
+    #                     "custom relationships, but none matched."
+    #                 )
+    #             relationships_by_requirements = {}
+    #             completed_relationships = []
+
+    #             for relationship in custom_relationships:
+    #                 requirements = (
+    #                     not relationship["_is_relationship_enriched"],
+    #                     not relationship["does_relationship_have_questions"],
+    #                     not relationship["does_relationship_have_keywords"],
+    #                     not relationship["does_relationship_have_weight"],
+    #                 )
+    #                 if any(requirements):
+    #                     relationships_by_requirements.setdefault(
+    #                         requirements,
+    #                         [],
+    #                     ).append(relationship)
+    #                 else:
+    #                     completed_relationships.append(dict(relationship))
+
+    #             entity_id_to_local_id, prompt_entities = (
+    #                 await self.prepare_custom_relationship_entity_mapping(
+    #                     custom_relationships
+    #                 )
+    #             )
+    #             llm_token_totals = []
+    #             for requirements, relationship_group in (
+    #                 relationships_by_requirements.items()
+    #             ):
+    #                 enriched_relationships, llm_tokens = (
+    #                     await self.enrich_custom_relationship_group(
+    #                         relationships=relationship_group,
+    #                         chunk_content=chunk_content,
+    #                         requirements=requirements,
+    #                         entity_id_to_local_id=entity_id_to_local_id,
+    #                         prompt_entities=prompt_entities,
+    #                     )
+    #                 )
+    #                 completed_relationships.extend(enriched_relationships)
+    #                 llm_token_totals.append(llm_tokens)
+
+    #             if len(completed_relationships) != len(custom_relationships):
+    #                 raise ValueError(
+    #                     f"Expected {len(custom_relationships)} relationships "
+    #                     f"for chunk '{chunk_id}', but prepared "
+    #                     f"{len(completed_relationships)}."
+    #                 )
+
+    #             return await self.save_custom_relationships_for_chunk(
+    #                 chunk_id=chunk_id,
+    #                 relationships=completed_relationships,
+    #                 llm_token_totals=llm_token_totals,
+    #             )
+
+    #         for batch_start in range(0, len(chunks), requests_per_minute):
+    #             batch = chunks[
+    #                 batch_start:batch_start + requests_per_minute
+    #             ]
+    #             results = await asyncio.gather(
+    #                 *(ingest_chunk(chunk) for chunk in batch),
+    #                 return_exceptions=True,
+    #             )
+    #             for chunk, result in zip(batch, results):
+    #                 if isinstance(result, Exception):
+    #                     await self.log_failure(
+    #                         "relation",
+    #                         "chunk",
+    #                         self.hash_func(chunk[0]),
+    #                         result,
+    #                     )
+    #             for result in results:
+    #                 if not isinstance(result, Exception):
+    #                     progress.update(result)
+
+    #             if verbose:
+    #                 batch_number = batch_start // requests_per_minute + 1
+    #                 print(
+    #                     f"Finished batch {batch_number}: "
+    #                     f"{len(batch)} chunks processed"
+    #                 )
+    #                 for index, result in enumerate(results):
+    #                     if isinstance(result, Exception):
+    #                         print(
+    #                             f"Chunk {batch_start + index} failed: {result}"
+    #                         )
+
+    #             if batch_start + requests_per_minute < len(chunks):
+    #                 if verbose:
+    #                     print(f"Cooling down for {async_cooldown} seconds...")
+    #                 await asyncio.sleep(async_cooldown)
+
+    #         progress.close()
+    #         if current_try < max_tries:
+    #             remaining_chunks = (
+    #                 await self.get_chunks_waiting_for_relation_extraction()
+    #             )
+    #             if remaining_chunks:
+    #                 if verbose:
+    #                     print(
+    #                         f"Retrying {len(remaining_chunks)} incomplete "
+    #                         f"chunks after {async_cooldown} seconds..."
+    #                     )
+    #                 await asyncio.sleep(async_cooldown)
+
+    #     remaining_chunks = await self.get_chunks_waiting_for_relation_extraction()
+    #     if remaining_chunks:
+    #         remaining_ids = [self.hash_func(chunk[0]) for chunk in remaining_chunks]
+    #         raise RuntimeError(
+    #             "Custom relationship ingestion did not complete for chunk IDs "
+    #             f"{remaining_ids}; their extraction flags were not marked complete."
+    #         )
 
     async def ingest_custom_relationships_from_ingested_chunks(
         self,
@@ -1229,10 +1457,45 @@ class RelationshipIndexer:
 
         relationships_by_chunk = {}
         for relationship in custom_relationships_json:
+            chunk_id = relationship["chunk_id"]
+            if isinstance(chunk_id, bool) or not isinstance(chunk_id, int):
+                raise TypeError(
+                    "Custom relationship chunk_id values must be "
+                    "SQLite-compatible integers; got "
+                    f"{chunk_id!r} ({type(chunk_id).__name__})."
+                )
             relationships_by_chunk.setdefault(
-                relationship["chunk_id"],
+                chunk_id,
                 [],
             ).append(relationship)
+
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT chunk_id, content FROM chunk"
+            )
+            persisted_chunks = {
+                row[0]: row[1] for row in await cursor.fetchall()
+            }
+            await cursor.close()
+        persisted_chunk_ids = set(persisted_chunks)
+        unmatched_chunk_ids = set(relationships_by_chunk) - persisted_chunk_ids
+        if unmatched_chunk_ids:
+            raise ValueError(
+                "Custom relationships reference chunk IDs that are not present "
+                f"in SQLite: {sorted(unmatched_chunk_ids)}. This usually "
+                "indicates a generated chunk-ID type or hash mismatch."
+            )
+        hash_mismatches = {
+            chunk_id: self.hash_func(persisted_chunks[chunk_id])
+            for chunk_id in relationships_by_chunk
+            if self.hash_func(persisted_chunks[chunk_id]) != chunk_id
+        }
+        if hash_mismatches:
+            raise ValueError(
+                "Custom relationship chunk IDs do not match the hashes "
+                "recomputed from SQLite chunk content: "
+                f"{hash_mismatches}."
+            )
 
         max_tries = 4
         current_try = 0
@@ -1260,10 +1523,36 @@ class RelationshipIndexer:
                 chunk_content = chunk[0]
                 chunk_id = self.hash_func(chunk_content)
                 custom_relationships = relationships_by_chunk.get(chunk_id, [])
+                if chunk_id in relationships_by_chunk and not custom_relationships:
+                    raise RuntimeError(
+                        f"Chunk '{chunk_id}' was expected to contain supplied "
+                        "custom relationships, but none matched."
+                    )
                 relationships_by_requirements = {}
                 completed_relationships = []
 
                 for relationship in custom_relationships:
+                    cursor = await self.conn.execute(
+                        """
+                        SELECT relation_description
+                        FROM relationship
+                        WHERE relation_id = ?
+                        """,
+                        (relationship["relation_id"],),
+                    )
+                    existing_relationship = await cursor.fetchone()
+                    await cursor.close()
+
+                    if (
+                        existing_relationship is not None
+                        and self.hash_func(existing_relationship[0])
+                        == self.hash_func(
+                            relationship["relation_description"]
+                        )
+                    ):
+                        completed_relationships.append(dict(relationship))
+                        continue
+
                     requirements = (
                         not relationship["_is_relationship_enriched"],
                         not relationship["does_relationship_have_questions"],
@@ -1362,5 +1651,12 @@ class RelationshipIndexer:
                         )
                     await asyncio.sleep(async_cooldown)
 
+        remaining_chunks = await self.get_chunks_waiting_for_relation_extraction()
+        if remaining_chunks:
+            remaining_ids = [self.hash_func(chunk[0]) for chunk in remaining_chunks]
+            raise RuntimeError(
+                "Custom relationship ingestion did not complete for chunk IDs "
+                f"{remaining_ids}; their extraction flags were not marked complete."
+            )
     
  

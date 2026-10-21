@@ -1,7 +1,7 @@
 import json
 import random
 import numpy as np
-from model2vec import StaticModel
+# from model2vec import StaticModel
 from .trie import PathTrie
 class Node:
     __slots__ = ("entity_id", "entity_name", "entity_type", "entity_description", "path_count")
@@ -58,16 +58,16 @@ class PathManager:
         self.small_llm = None
         self.query_embedding = None
         self.entity_description_cache = {}
-        if self.query:
-            if PathManager._description_model is None:
-                PathManager._description_model = StaticModel.from_pretrained(
-                    "minishlab/potion-base-32M"
-                )
-            self.small_llm = PathManager._description_model
-            self.query_embedding = self.small_llm.encode([self.query])[0]
-            query_norm = np.linalg.norm(self.query_embedding)
-            if query_norm:
-                self.query_embedding = self.query_embedding / query_norm
+        # if self.query:
+        #     if PathManager._description_model is None:
+        #         PathManager._description_model = StaticModel.from_pretrained(
+        #             "minishlab/potion-base-32M"
+        #         )
+        #     self.small_llm = PathManager._description_model
+        #     self.query_embedding = self.small_llm.encode([self.query])[0]
+        #     query_norm = np.linalg.norm(self.query_embedding)
+        #     if query_norm:
+        #         self.query_embedding = self.query_embedding / query_norm
     @staticmethod
     def _relationship_ids(path):
         """Return the ordered relationship sequence used for deduplication."""

@@ -83,5 +83,6 @@ class GeminiAgent(LanguageModel):
                         )
             llm_response = response.text
             json_response = response.parsed.model_dump()
-        tokens = self.tokenize(llm_response)
-        return json_response, len(tokens)
+        input_tokens = len(self.tokenize(prompt))
+        output_tokens = len(self.tokenize(llm_response))
+        return json_response, input_tokens + output_tokens, input_tokens, output_tokens

@@ -317,13 +317,20 @@ class EntityIndexer4:
     ##########################################################################
     #       Entity Extraction & Ingestion Operations for Indexing            #
     ##########################################################################
-    async def extract_entity(self, entity_groups_prompt, number_to_group_map, chunk):
+    async def extract_entity(
+        self,
+        entity_groups_prompt,
+        number_to_group_map,
+        chunk,
+    ):
         if not self.conn:
             raise RuntimeError("Database not opened")
 
         try:
             chunk_hash = self.hash_func(chunk)
-            embedding_model_hash = self.hash_func(self.embedding_model.model_name)
+            embedding_model_hash = self.hash_func(
+                self.embedding_model.model_name
+            )
             embedding_model_hash_str = f"{embedding_model_hash}"
             prompt = ENTITY_RECOGNITION_PROMPT.format(
                 entity_types=entity_groups_prompt,
@@ -340,7 +347,9 @@ class EntityIndexer4:
                 error,
             )
             traceback.print_exc()
-            raise RuntimeError(f"Error preparing entity recognition prompt: {error}")
+            raise RuntimeError(
+                f"Error preparing entity recognition prompt: {error}"
+            )
 
         try:
             response = await self.language_model(
@@ -379,10 +388,16 @@ class EntityIndexer4:
                         }
                     )
                     entity_str = json.dumps(entity, indent=2)
-                    tokens = len(self.embedding_model.tokenize(entity_str))
+                    tokens = len(
+                        self.embedding_model.tokenize(entity_str)
+                    )
                     questions = entity["entity_questions"]
                     is_summarized = (
-                        len(self.embedding_model.tokenize(entity_description))
+                        len(
+                            self.embedding_model.tokenize(
+                                entity_description
+                            )
+                        )
                         <= self.max_entity_relation_description_token_size
                     )
 
@@ -423,50 +438,75 @@ class EntityIndexer4:
                         new_entities_added += 1
                     else:
                         old_description = existing_entity[0]
-                        old_questions = json.loads(existing_entity[1])
+                        old_questions = json.loads(
+                            existing_entity[1]
+                        )
                         old_tokens = existing_entity[2]
-                        combined_description = (
-                            old_description + "<SEP>" + entity_description
+
+                        old_description_hash = self.hash_func(
+                            old_description
                         )
-                        is_summarized = (
-                            len(
-                                self.embedding_model.tokenize(
-                                    combined_description
-                                )
+                        new_description_hash = self.hash_func(
+                            entity_description
+                        )
+
+                        if (
+                            old_description_hash
+                            != new_description_hash
+                        ):
+                            combined_description = (
+                                f"{old_description}<SEP>"
+                                f"{entity_description}"
                             )
-                            <= self.max_entity_relation_description_token_size
-                        )
-                        await self.conn.execute(
-                            """
-                            UPDATE entity
-                            SET entity_description = ?,
-                                questions = ?,
-                                tokens = ?,
-                                is_summarized = ?
-                            WHERE entity_id = ?
-                            """,
-                            (
-                                combined_description,
-                                json.dumps(old_questions + questions),
-                                old_tokens + tokens,
-                                is_summarized,
-                                entity_id,
-                            ),
-                        )
+                            combined_questions = (
+                                old_questions + questions
+                            )
+                            is_summarized = (
+                                len(
+                                    self.embedding_model.tokenize(
+                                        combined_description
+                                    )
+                                )
+                                <= self.max_entity_relation_description_token_size
+                            )
+
+                            await self.conn.execute(
+                                """
+                                UPDATE entity
+                                SET entity_description = ?,
+                                    questions = ?,
+                                    tokens = ?,
+                                    is_summarized = ?
+                                WHERE entity_id = ?
+                                """,
+                                (
+                                    combined_description,
+                                    json.dumps(
+                                        combined_questions
+                                    ),
+                                    old_tokens + tokens,
+                                    is_summarized,
+                                    entity_id,
+                                ),
+                            )
 
                     for group in entity_groups:
                         await self.conn.execute(
                             """
-                            INSERT OR IGNORE INTO entity_to_entity_type_mapping
-                            (entity_id, entity_type) VALUES (?, ?)
+                            INSERT OR IGNORE INTO
+                                entity_to_entity_type_mapping
+                                (entity_id, entity_type)
+                            VALUES (?, ?)
                             """,
                             (entity_id, group),
                         )
 
                     await self.conn.execute(
                         """
-                        INSERT OR IGNORE INTO chunk_to_entity_mapping
-                        (chunk_id, entity_id) VALUES (?, ?)
+                        INSERT OR IGNORE INTO
+                            chunk_to_entity_mapping
+                            (chunk_id, entity_id)
+                        VALUES (?, ?)
                         """,
                         (chunk_hash, entity_id),
                     )
@@ -479,7 +519,9 @@ class EntityIndexer4:
                     """,
                     (chunk_hash,),
                 )
-                await self.save_input_and_output_tokens_for_llm(response[1])
+                await self.save_input_and_output_tokens_for_llm(
+                    response[1]
+                )
                 await self.conn.commit()
                 return new_entities_added
             except Exception as error:
@@ -492,7 +534,10 @@ class EntityIndexer4:
                     lock_held=True,
                 )
                 traceback.print_exc()
-                print(f"Error saving extracted entities to database: {error}")
+                print(
+                    "Error saving extracted entities to database: "
+                    f"{error}"
+                )
                 return 0
 
     async def extract_entities_from_ingested_chunks(
@@ -764,10 +809,13 @@ class EntityIndexer4:
             local_entity_id: entity
             for local_entity_id, entity in enumerate(entities, start=1)
         }
-        prompt_entities = {
-            local_entity_id: entity["entity_name"]
+        prompt_entities = [
+            {
+                "id": local_entity_id,
+                "entity_name": entity["entity_name"],
+            }
             for local_entity_id, entity in local_id_to_entity.items()
-        }
+        ]
         prompt = prompt_template.format(
             language=self.summary_language,
             entity_types=group_prompt,
@@ -832,155 +880,344 @@ class EntityIndexer4:
         return enriched_entities, response[1]
 
     async def save_custom_entities_for_chunk(
-        self,
-        chunk_id,
-        entities,
-        llm_token_totals,
-    ):
-        """Atomically save every custom entity associated with one chunk."""
-        embedding_model_hash = str(
-            self.hash_func(self.embedding_model.model_name)
-        )
-        new_entities_added = 0
+            self,
+            chunk_id,
+            entities,
+            llm_token_totals,
+        ):
+            """Atomically save every custom entity associated with one chunk."""
+            embedding_model_hash = str(
+                self.hash_func(self.embedding_model.model_name)
+            )
+            new_entities_added = 0
 
-        async with self.lock:
-            try:
-                for entity in entities:
-                    mapping_cursor = await self.conn.execute(
-                        """
-                        SELECT 1
-                        FROM chunk_to_entity_mapping
-                        WHERE chunk_id = ? AND entity_id = ?
-                        """,
-                        (chunk_id, entity["entity_id"]),
-                    )
-                    mapping_exists = await mapping_cursor.fetchone()
-                    await mapping_cursor.close()
-                    if mapping_exists is not None:
-                        continue
-
-                    entity_record = {
-                        "entity_name": entity["entity_name"],
-                        "entity_description": entity["entity_description"],
-                        "entity_groups": entity["entity_types"],
-                        "questions": entity["questions"],
-                    }
-                    tokens = len(
-                        self.embedding_model.tokenize(
-                            json.dumps(entity_record, ensure_ascii=False)
-                        )
-                    )
-                    cursor = await self.conn.execute(
-                        """
-                        SELECT entity_description, questions, tokens
-                        FROM entity
-                        WHERE entity_id = ?
-                        """,
-                        (entity["entity_id"],),
-                    )
-                    existing_entity = await cursor.fetchone()
-                    await cursor.close()
-
-                    if existing_entity is None:
-                        is_summarized = (
-                            len(
-                                self.embedding_model.tokenize(
-                                    entity["entity_description"]
-                                )
-                            )
-                            <= self.max_entity_relation_description_token_size
-                        )
-                        await self.conn.execute(
+            async with self.lock:
+                try:
+                    for entity in entities:
+                        mapping_cursor = await self.conn.execute(
                             """
-                            INSERT INTO entity (
-                                entity_id,
-                                entity_name,
-                                entity_description,
-                                questions,
-                                embedding_model_id,
-                                tokens,
-                                is_summarized
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            SELECT 1
+                            FROM chunk_to_entity_mapping
+                            WHERE chunk_id = ? AND entity_id = ?
                             """,
-                            (
-                                entity["entity_id"],
-                                entity["entity_name"],
-                                entity["entity_description"],
-                                json.dumps(entity["questions"]),
-                                embedding_model_hash,
-                                tokens,
-                                is_summarized,
-                            ),
+                            (chunk_id, entity["entity_id"]),
                         )
-                        new_entities_added += 1
-                    else:
-                        old_description, old_questions_json, old_tokens = (
-                            existing_entity
-                        )
-                        combined_description = (
-                            f"{old_description}<SEP>"
-                            f"{entity['entity_description']}"
-                        )
-                        combined_questions = (
-                            json.loads(old_questions_json) + entity["questions"]
-                        )
-                        is_summarized = (
-                            len(
-                                self.embedding_model.tokenize(
-                                    combined_description
-                                )
+                        mapping_exists = await mapping_cursor.fetchone()
+                        await mapping_cursor.close()
+                        if mapping_exists is not None:
+                            continue
+
+                        entity_record = {
+                            "entity_name": entity["entity_name"],
+                            "entity_description": entity["entity_description"],
+                            "entity_groups": entity["entity_types"],
+                            "questions": entity["questions"],
+                        }
+                        tokens = len(
+                            self.embedding_model.tokenize(
+                                json.dumps(entity_record, ensure_ascii=False)
                             )
-                            <= self.max_entity_relation_description_token_size
                         )
-                        await self.conn.execute(
+                        cursor = await self.conn.execute(
                             """
-                            UPDATE entity
-                            SET entity_description = ?,
-                                questions = ?,
-                                tokens = ?,
-                                is_summarized = ?
+                            SELECT entity_description, questions, tokens
+                            FROM entity
                             WHERE entity_id = ?
                             """,
-                            (
-                                combined_description,
-                                json.dumps(combined_questions),
-                                old_tokens + tokens,
-                                is_summarized,
-                                entity["entity_id"],
-                            ),
+                            (entity["entity_id"],),
                         )
+                        existing_entity = await cursor.fetchone()
+                        await cursor.close()
 
-                    for entity_type in entity["entity_types"]:
+                        if existing_entity is None:
+                            is_summarized = (
+                                len(
+                                    self.embedding_model.tokenize(
+                                        entity["entity_description"]
+                                    )
+                                )
+                                <= self.max_entity_relation_description_token_size
+                            )
+                            await self.conn.execute(
+                                """
+                                INSERT INTO entity (
+                                    entity_id,
+                                    entity_name,
+                                    entity_description,
+                                    questions,
+                                    embedding_model_id,
+                                    tokens,
+                                    is_summarized
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    entity["entity_id"],
+                                    entity["entity_name"],
+                                    entity["entity_description"],
+                                    json.dumps(entity["questions"]),
+                                    embedding_model_hash,
+                                    tokens,
+                                    is_summarized,
+                                ),
+                            )
+                            new_entities_added += 1
+                        else:
+                            old_description, old_questions_json, old_tokens = (
+                                existing_entity
+                            )
+                            old_description_hash = self.hash_func(old_description)
+                            new_description_hash = self.hash_func(
+                                entity["entity_description"]
+                            )
+
+                            if old_description_hash != new_description_hash:
+                                combined_description = (
+                                    f"{old_description}<SEP>"
+                                    f"{entity['entity_description']}"
+                                )
+                                combined_questions = (
+                                    json.loads(old_questions_json)
+                                    + entity["questions"]
+                                )
+                                is_summarized = (
+                                    len(
+                                        self.embedding_model.tokenize(
+                                            combined_description
+                                        )
+                                    )
+                                    <= self.max_entity_relation_description_token_size
+                                )
+                                await self.conn.execute(
+                                    """
+                                    UPDATE entity
+                                    SET entity_description = ?,
+                                        questions = ?,
+                                        tokens = ?,
+                                        is_summarized = ?
+                                    WHERE entity_id = ?
+                                    """,
+                                    (
+                                        combined_description,
+                                        json.dumps(combined_questions),
+                                        old_tokens + tokens,
+                                        is_summarized,
+                                        entity["entity_id"],
+                                    ),
+                                )
+
+                        for entity_type in entity["entity_types"]:
+                            await self.conn.execute(
+                                """
+                                INSERT OR IGNORE INTO entity_to_entity_type_mapping
+                                (entity_id, entity_type) VALUES (?, ?)
+                                """,
+                                (entity["entity_id"], entity_type),
+                            )
                         await self.conn.execute(
                             """
-                            INSERT OR IGNORE INTO entity_to_entity_type_mapping
-                            (entity_id, entity_type) VALUES (?, ?)
+                            INSERT OR IGNORE INTO chunk_to_entity_mapping
+                            (chunk_id, entity_id) VALUES (?, ?)
                             """,
-                            (entity["entity_id"], entity_type),
+                            (chunk_id, entity["entity_id"]),
                         )
+
+                    for llm_tokens in llm_token_totals:
+                        await self.save_input_and_output_tokens_for_llm(llm_tokens)
                     await self.conn.execute(
                         """
-                        INSERT OR IGNORE INTO chunk_to_entity_mapping
-                        (chunk_id, entity_id) VALUES (?, ?)
+                        UPDATE chunk
+                        SET are_entities_extracted = 1
+                        WHERE chunk_id = ?
                         """,
-                        (chunk_id, entity["entity_id"]),
+                        (chunk_id,),
                     )
+                    await self.conn.commit()
+                    return new_entities_added
+                except Exception:
+                    await self.conn.rollback()
+                    raise
+    # async def ingest_custom_entities_from_ingested_chunks(
+    #     self,
+    #     custom_entities_json,
+    #     async_cooldown=60,
+    #     requests_per_minute=1000,
+    #     verbose=True,
+    # ):
+    #     if not self.conn:
+    #         raise RuntimeError("Database connection is not established")
+    #     if not isinstance(custom_entities_json, list):
+    #         raise TypeError("custom_entities_json must be a list of entities")
+    #     if requests_per_minute <= 0:
+    #         raise ValueError("requests_per_minute must be greater than 0")
+    #     if async_cooldown <= 0:
+    #         raise ValueError("async_cooldown must be greater than 0")
 
-                for llm_tokens in llm_token_totals:
-                    await self.save_input_and_output_tokens_for_llm(llm_tokens)
-                await self.conn.execute(
-                    """
-                    UPDATE chunk
-                    SET are_entities_extracted = 1
-                    WHERE chunk_id = ?
-                    """,
-                    (chunk_id,),
-                )
-                await self.conn.commit()
-                return new_entities_added
-            except Exception:
-                await self.conn.rollback()
-                raise
+    #     entities_by_chunk = {}
+    #     for entity in custom_entities_json:
+    #         chunk_id = entity["chunk_id"]
+    #         if isinstance(chunk_id, bool) or not isinstance(chunk_id, int):
+    #             raise TypeError(
+    #                 "Custom entity chunk_id values must be SQLite-compatible "
+    #                 f"integers; got {chunk_id!r} ({type(chunk_id).__name__})."
+    #             )
+    #         entities_by_chunk.setdefault(chunk_id, []).append(entity)
+
+    #     async with self.lock:
+    #         cursor = await self.conn.execute(
+    #             "SELECT chunk_id, content FROM chunk"
+    #         )
+    #         persisted_chunks = {
+    #             row[0]: row[1] for row in await cursor.fetchall()
+    #         }
+    #         await cursor.close()
+    #     persisted_chunk_ids = set(persisted_chunks)
+    #     unmatched_chunk_ids = set(entities_by_chunk) - persisted_chunk_ids
+    #     if unmatched_chunk_ids:
+    #         raise ValueError(
+    #             "Custom entities reference chunk IDs that are not present in "
+    #             f"SQLite: {sorted(unmatched_chunk_ids)}. This usually indicates "
+    #             "a generated chunk-ID type or hash mismatch."
+    #         )
+    #     hash_mismatches = {
+    #         chunk_id: self.hash_func(persisted_chunks[chunk_id])
+    #         for chunk_id in entities_by_chunk
+    #         if self.hash_func(persisted_chunks[chunk_id]) != chunk_id
+    #     }
+    #     if hash_mismatches:
+    #         raise ValueError(
+    #             "Custom entity chunk IDs do not match the hashes recomputed "
+    #             f"from SQLite chunk content: {hash_mismatches}."
+    #         )
+
+    #     max_tries = 4
+    #     current_try = 0
+    #     while current_try < max_tries:
+    #         chunks = await self.get_chunks_waiting_for_entity_extraction()
+    #         if not chunks:
+    #             break
+    #         current_try += 1
+
+    #         if verbose:
+    #             print(f"Found {len(chunks)} chunks waiting for entity extraction.")
+
+    #         progress = tqdm_asyncio(
+    #             total=None,
+    #             desc="Adding Pre-Defined Entities",
+    #             bar_format="{desc}: {n} entities [{elapsed}, {rate_fmt}]",
+    #         )
+
+    #         async def ingest_chunk(chunk):
+    #             chunk_content = chunk[0]
+    #             chunk_id = self.hash_func(chunk_content)
+    #             custom_entities = entities_by_chunk.get(chunk_id, [])
+    #             if chunk_id in entities_by_chunk and not custom_entities:
+    #                 raise RuntimeError(
+    #                     f"Chunk '{chunk_id}' was expected to contain supplied "
+    #                     "custom entities, but none matched."
+    #                 )
+    #             entities_by_requirements = {}
+    #             completed_entities = []
+
+    #             for entity in custom_entities:
+    #                 requirements = (
+    #                     not entity["_is_entity_enriched"],
+    #                     not entity["does_entity_have_questions"],
+    #                     not entity["does_entity_have_types"],
+    #                 )
+    #                 if any(requirements):
+    #                     entities_by_requirements.setdefault(
+    #                         requirements,
+    #                         [],
+    #                     ).append(entity)
+    #                 else:
+    #                     completed_entities.append(dict(entity))
+
+    #             llm_token_totals = []
+    #             for requirements, entity_group in (
+    #                 entities_by_requirements.items()
+    #             ):
+    #                 enriched_entities, llm_tokens = (
+    #                     await self.enrich_custom_entity_group(
+    #                         entities=entity_group,
+    #                         chunk_content=chunk_content,
+    #                         requirements=requirements,
+    #                     )
+    #                 )
+    #                 completed_entities.extend(enriched_entities)
+    #                 llm_token_totals.append(llm_tokens)
+
+    #             if len(completed_entities) != len(custom_entities):
+    #                 raise ValueError(
+    #                     f"Expected {len(custom_entities)} entities for chunk "
+    #                     f"'{chunk_id}', but prepared {len(completed_entities)}."
+    #                 )
+
+    #             return await self.save_custom_entities_for_chunk(
+    #                 chunk_id=chunk_id,
+    #                 entities=completed_entities,
+    #                 llm_token_totals=llm_token_totals,
+    #             )
+
+    #         for batch_start in range(0, len(chunks), requests_per_minute):
+    #             batch = chunks[
+    #                 batch_start:batch_start + requests_per_minute
+    #             ]
+    #             results = await asyncio.gather(
+    #                 *(ingest_chunk(chunk) for chunk in batch),
+    #                 return_exceptions=True,
+    #             )
+
+    #             for chunk, result in zip(batch, results):
+    #                 if isinstance(result, Exception):
+    #                     await self.log_failure(
+    #                         "entity",
+    #                         "chunk",
+    #                         self.hash_func(chunk[0]),
+    #                         result,
+    #                     )
+
+    #             for result in results:
+    #                 if not isinstance(result, Exception):
+    #                     progress.update(result)
+
+    #             if verbose:
+    #                 batch_number = batch_start // requests_per_minute + 1
+    #                 print(
+    #                     f"Finished batch {batch_number}: "
+    #                     f"{len(batch)} chunks processed"
+    #                 )
+    #                 for index, result in enumerate(results):
+    #                     if isinstance(result, Exception):
+    #                         print(
+    #                             f"Chunk {batch_start + index} failed: {result}"
+    #                         )
+
+    #             if batch_start + requests_per_minute < len(chunks):
+    #                 if verbose:
+    #                     print(f"Cooling down for {async_cooldown} seconds...")
+    #                 await asyncio.sleep(async_cooldown)
+
+    #         progress.close()
+
+    #         if current_try < max_tries:
+    #             remaining_chunks = (
+    #                 await self.get_chunks_waiting_for_entity_extraction()
+    #             )
+    #             if remaining_chunks:
+    #                 if verbose:
+    #                     print(
+    #                         f"Retrying {len(remaining_chunks)} incomplete "
+    #                         f"chunks after {async_cooldown} seconds..."
+    #                     )
+    #                 await asyncio.sleep(async_cooldown)
+
+    #     remaining_chunks = await self.get_chunks_waiting_for_entity_extraction()
+    #     if remaining_chunks:
+    #         remaining_ids = [self.hash_func(chunk[0]) for chunk in remaining_chunks]
+    #         raise RuntimeError(
+    #             "Custom entity ingestion did not complete for chunk IDs "
+    #             f"{remaining_ids}; their extraction flags were not marked complete."
+    #         )
 
     async def ingest_custom_entities_from_ingested_chunks(
         self,
@@ -1000,7 +1237,40 @@ class EntityIndexer4:
 
         entities_by_chunk = {}
         for entity in custom_entities_json:
-            entities_by_chunk.setdefault(entity["chunk_id"], []).append(entity)
+            chunk_id = entity["chunk_id"]
+            if isinstance(chunk_id, bool) or not isinstance(chunk_id, int):
+                raise TypeError(
+                    "Custom entity chunk_id values must be SQLite-compatible "
+                    f"integers; got {chunk_id!r} ({type(chunk_id).__name__})."
+                )
+            entities_by_chunk.setdefault(chunk_id, []).append(entity)
+
+        async with self.lock:
+            cursor = await self.conn.execute(
+                "SELECT chunk_id, content FROM chunk"
+            )
+            persisted_chunks = {
+                row[0]: row[1] for row in await cursor.fetchall()
+            }
+            await cursor.close()
+        persisted_chunk_ids = set(persisted_chunks)
+        unmatched_chunk_ids = set(entities_by_chunk) - persisted_chunk_ids
+        if unmatched_chunk_ids:
+            raise ValueError(
+                "Custom entities reference chunk IDs that are not present in "
+                f"SQLite: {sorted(unmatched_chunk_ids)}. This usually indicates "
+                "a generated chunk-ID type or hash mismatch."
+            )
+        hash_mismatches = {
+            chunk_id: self.hash_func(persisted_chunks[chunk_id])
+            for chunk_id in entities_by_chunk
+            if self.hash_func(persisted_chunks[chunk_id]) != chunk_id
+        }
+        if hash_mismatches:
+            raise ValueError(
+                "Custom entity chunk IDs do not match the hashes recomputed "
+                f"from SQLite chunk content: {hash_mismatches}."
+            )
 
         max_tries = 4
         current_try = 0
@@ -1023,10 +1293,34 @@ class EntityIndexer4:
                 chunk_content = chunk[0]
                 chunk_id = self.hash_func(chunk_content)
                 custom_entities = entities_by_chunk.get(chunk_id, [])
+                if chunk_id in entities_by_chunk and not custom_entities:
+                    raise RuntimeError(
+                        f"Chunk '{chunk_id}' was expected to contain supplied "
+                        "custom entities, but none matched."
+                    )
                 entities_by_requirements = {}
                 completed_entities = []
 
                 for entity in custom_entities:
+                    cursor = await self.conn.execute(
+                        """
+                        SELECT entity_description
+                        FROM entity
+                        WHERE entity_id = ?
+                        """,
+                        (entity["entity_id"],),
+                    )
+                    existing_entity = await cursor.fetchone()
+                    await cursor.close()
+
+                    if (
+                        existing_entity is not None
+                        and self.hash_func(existing_entity[0])
+                        == self.hash_func(entity["entity_description"])
+                    ):
+                        completed_entities.append(dict(entity))
+                        continue
+
                     requirements = (
                         not entity["_is_entity_enriched"],
                         not entity["does_entity_have_questions"],
@@ -1118,3 +1412,11 @@ class EntityIndexer4:
                             f"chunks after {async_cooldown} seconds..."
                         )
                     await asyncio.sleep(async_cooldown)
+
+        remaining_chunks = await self.get_chunks_waiting_for_entity_extraction()
+        if remaining_chunks:
+            remaining_ids = [self.hash_func(chunk[0]) for chunk in remaining_chunks]
+            raise RuntimeError(
+                "Custom entity ingestion did not complete for chunk IDs "
+                f"{remaining_ids}; their extraction flags were not marked complete."
+            )

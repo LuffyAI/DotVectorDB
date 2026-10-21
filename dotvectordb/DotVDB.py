@@ -36,6 +36,9 @@ import traceback
 import tiktoken
 import warnings
 import re
+import math
+import unicodedata
+import numpy as np
 BASE_DIR = Path(__file__).resolve().parent
 class DotVectorDB:
     def __init__(self, path: str, 
@@ -60,6 +63,8 @@ class DotVectorDB:
         self.verbose = verbose
         self.conn: aiosqlite.Connection | None = None
         self.lock = asyncio.Lock()
+        self._query_embedding_tasks = {}
+        self._query_embedding_tasks_lock = asyncio.Lock()
         self._sql_browser_server = None
     ############################################################
     #   Helper Functions For DotVDB                            # 
@@ -162,18 +167,154 @@ class DotVectorDB:
             relationships_sql = self.__read_schema_file("relationship.sql")
             failure_log_sql = self.__read_schema_file("failure_log.sql")
             chat_history_sql = self.__read_schema_file("chat_history.sql")
+            query_embeddings_sql = self.__read_schema_file(
+                "query_embeddings.sql"
+            )
             async with self.lock:
                 await self.conn.executescript(chunks_sql)
                 await self.conn.executescript(entities_sql)
                 await self.conn.executescript(relationships_sql)
                 await self.conn.executescript(failure_log_sql)
                 await self.conn.executescript(chat_history_sql)
+                await self.conn.executescript(query_embeddings_sql)
                 await self.conn.commit()
             if self.verbose:
                 print("Default schema initialized successfully.")
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the initialize_default_schema function inside DotVectorDB: {e}")
+    async def add_token_column(self) -> list[str]:
+        """Add ``tokens`` to the chunk table if it is missing."""
+        self.__require_open_connection()
+        updated_tables = []
+        async with self.lock:
+            table = "chunk"
+            cursor = await self.conn.execute(
+                f'PRAGMA table_info("{table}")'
+            )
+            columns = {
+                row[1] for row in await cursor.fetchall()
+            }
+            await cursor.close()
+            if "tokens" not in columns:
+                await self.conn.execute(
+                    f'ALTER TABLE "{table}" ADD COLUMN '
+                    'tokens INTEGER NOT NULL DEFAULT 0'
+                )
+                updated_tables.append(table)
+            await self.conn.commit()
+        return updated_tables
+
+    async def precompute_tokens(
+        self,
+        table,
+        fields,
+        batch_size=1_000,
+    ) -> int:
+        """Store the summed token count of selected fields for every row.
+
+        Counts are stored in the ``tokens`` column shared by chunk, entity,
+        and relationship.
+        """
+        self.__require_open_connection()
+        if table not in {"chunk", "entity", "relationship"}:
+            raise ValueError(
+                "table must be 'chunk', 'entity', or 'relationship'"
+            )
+        if not isinstance(fields, list):
+            raise TypeError("fields must be a list")
+        if not fields:
+            raise ValueError("fields cannot be empty")
+        if any(
+            not isinstance(field, str) or not field.strip()
+            for field in fields
+        ):
+            raise TypeError("every field must be a non-empty string")
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
+            raise ValueError("batch_size must be a positive integer")
+
+        fields = list(dict.fromkeys(field.strip() for field in fields))
+        token_column = "tokens"
+        if token_column in fields:
+            raise ValueError(
+                f"{token_column} cannot be used to compute itself"
+            )
+
+        async with self.lock:
+            schema_cursor = await self.conn.execute(
+                f'PRAGMA table_info("{table}")'
+            )
+            available_fields = {
+                row[1] for row in await schema_cursor.fetchall()
+            }
+            await schema_cursor.close()
+
+            if token_column not in available_fields:
+                raise RuntimeError(
+                    f"{table}.{token_column} does not exist"
+                    + (
+                        "; call add_token_column() first"
+                        if table == "chunk"
+                        else ""
+                    )
+                )
+            unknown_fields = [
+                field for field in fields
+                if field not in available_fields
+            ]
+            if unknown_fields:
+                raise ValueError(
+                    f"Unknown fields for {table}: "
+                    + ", ".join(unknown_fields)
+                )
+
+            selected_fields = ", ".join(
+                f'"{field}"' for field in fields
+            )
+            cursor = await self.conn.execute(
+                f'SELECT rowid, {selected_fields} FROM "{table}"'
+            )
+            updated_row_count = 0
+
+            def count_batch_tokens(rows):
+                updates = []
+                for row in rows:
+                    rowid, *values = row
+                    token_count = sum(
+                        len(self.tokenizer.encode(str(value)))
+                        for value in values
+                        if value is not None
+                    )
+                    updates.append((token_count, rowid))
+                return updates
+
+            try:
+                while True:
+                    rows = await cursor.fetchmany(batch_size)
+                    if not rows:
+                        break
+                    updates = await asyncio.to_thread(
+                        count_batch_tokens,
+                        rows,
+                    )
+                    await self.conn.executemany(
+                        f'UPDATE "{table}" '
+                        f'SET "{token_column}" = ? WHERE rowid = ?',
+                        updates,
+                    )
+                    updated_row_count += len(updates)
+                await self.conn.commit()
+            except Exception:
+                await self.conn.rollback()
+                raise
+            finally:
+                await cursor.close()
+
+        return updated_row_count
     async def add_entity_tag(self,  tag):
         self.__require_open_connection()
         try:
@@ -294,24 +435,148 @@ class DotVectorDB:
     ############################################################
     async def get_entity_metadata(self, entity_id)-> dict:
         self.__require_open_connection()
-        async with self.lock:
-            cursor = await self.conn.execute(
-                "SELECT * FROM entity WHERE entity_id = ?",
-                (entity_id,)
-            )
-            row = await cursor.fetchone()
-            await cursor.close()
-            return self.__transform_SQL_row_to_dict(row, cursor)
+        cursor = await self.conn.execute(
+            "SELECT * FROM entity WHERE entity_id = ?",
+            (entity_id,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self.__transform_SQL_row_to_dict(row, cursor)
     async def get_relationship_metadata(self, relationship_id)-> dict:
         self.__require_open_connection()
-        async with self.lock:
+        cursor = await self.conn.execute(
+            "SELECT * FROM relationship WHERE relation_id = ?",
+            (relationship_id,)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self.__transform_SQL_row_to_dict(row, cursor)
+    async def get_relationship_types(self, relationship_id) -> dict:
+        """Return a relationship's endpoint IDs and their entity types."""
+        self.__require_open_connection()
+        cursor = await self.conn.execute(
+            """
+            SELECT src_entity_id, dst_entity_id
+            FROM relationship
+            WHERE relation_id = ?
+            """,
+            (relationship_id,),
+        )
+        relationship = await cursor.fetchone()
+        await cursor.close()
+        if relationship is None:
+            return None
+
+        src_entity_id, dst_entity_id = relationship
+        cursor = await self.conn.execute(
+            """
+            SELECT entity_id, entity_type
+            FROM entity_to_entity_type_mapping
+            WHERE entity_id IN (?, ?)
+            ORDER BY entity_id, entity_type
+            """,
+            (src_entity_id, dst_entity_id),
+        )
+        type_rows = await cursor.fetchall()
+        await cursor.close()
+
+        types_by_entity_id = {
+            src_entity_id: [],
+            dst_entity_id: [],
+        }
+        for entity_id, entity_type in type_rows:
+            types_by_entity_id[entity_id].append(entity_type)
+
+        return {
+            "src_entity_id": src_entity_id,
+            "src_entity_types": types_by_entity_id[src_entity_id],
+            "dst_entity_id": dst_entity_id,
+            "dst_entity_types": types_by_entity_id[dst_entity_id],
+        }
+    async def batch_get_relationship_types(
+        self,
+        relationship_ids,
+        batch_size=10_000,
+    ) -> list[dict]:
+        """Return endpoint IDs and types for multiple relationships."""
+        self.__require_open_connection()
+        if not isinstance(relationship_ids, list):
+            raise TypeError("relationship_ids must be a list")
+        if any(
+            not isinstance(relationship_id, int)
+            or isinstance(relationship_id, bool)
+            for relationship_id in relationship_ids
+        ):
+            raise TypeError("every relationship_id must be an integer")
+        if (
+            not isinstance(batch_size, int)
+            or isinstance(batch_size, bool)
+            or batch_size <= 0
+        ):
+            raise ValueError("batch_size must be a positive integer")
+        if not relationship_ids:
+            return []
+
+        unique_relationship_ids = list(dict.fromkeys(relationship_ids))
+        relationships_by_id = {}
+        for start in range(0, len(unique_relationship_ids), batch_size):
+            batch = unique_relationship_ids[start:start + batch_size]
+            placeholders = ", ".join("?" for _ in batch)
             cursor = await self.conn.execute(
-                "SELECT * FROM relationship WHERE relation_id = ?",
-                (relationship_id,)
+                f"""
+                SELECT relation_id, src_entity_id, dst_entity_id
+                FROM relationship
+                WHERE relation_id IN ({placeholders})
+                """,
+                batch,
             )
-            row = await cursor.fetchone()
+            for relation_id, src_entity_id, dst_entity_id in (
+                await cursor.fetchall()
+            ):
+                relationships_by_id[relation_id] = (
+                    src_entity_id,
+                    dst_entity_id,
+                )
             await cursor.close()
-            return self.__transform_SQL_row_to_dict(row, cursor)
+
+        endpoint_ids = list(dict.fromkeys(
+            entity_id
+            for endpoints in relationships_by_id.values()
+            for entity_id in endpoints
+        ))
+        types_by_entity_id = {
+            entity_id: [] for entity_id in endpoint_ids
+        }
+        for start in range(0, len(endpoint_ids), batch_size):
+            batch = endpoint_ids[start:start + batch_size]
+            placeholders = ", ".join("?" for _ in batch)
+            cursor = await self.conn.execute(
+                f"""
+                SELECT entity_id, entity_type
+                FROM entity_to_entity_type_mapping
+                WHERE entity_id IN ({placeholders})
+                ORDER BY entity_id, entity_type
+                """,
+                batch,
+            )
+            for entity_id, entity_type in await cursor.fetchall():
+                types_by_entity_id[entity_id].append(entity_type)
+            await cursor.close()
+
+        results = []
+        for relationship_id in unique_relationship_ids:
+            endpoints = relationships_by_id.get(relationship_id)
+            if endpoints is None:
+                continue
+            src_entity_id, dst_entity_id = endpoints
+            results.append({
+                "relation_id": relationship_id,
+                "src_entity_id": src_entity_id,
+                "src_entity_types": types_by_entity_id[src_entity_id],
+                "dst_entity_id": dst_entity_id,
+                "dst_entity_types": types_by_entity_id[dst_entity_id],
+            })
+        return results
     async def get_chunk_metadata(self, chunk_id)-> dict:
         self.__require_open_connection()
         async with self.lock:
@@ -336,39 +601,38 @@ class DotVectorDB:
             """Gets entity types from the database and returns them as a dictionary"""
             self.__require_open_connection()
             try: 
-                async with self.lock:
-                    if only_populated:
-                        if include_counts:
-                            cursor = await self.conn.execute(
-                                """
-                                SELECT entity_type, type_description, num_entities
-                                FROM entity_types
-                                WHERE num_entities > 0
-                                """
-                            )
-                        else:
-                            cursor = await self.conn.execute(
-                                """
-                                SELECT entity_type, type_description
-                                FROM entity_types
-                                WHERE num_entities > 0
-                                """
-                            )
+                if only_populated:
+                    if include_counts:
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description, num_entities
+                            FROM entity_types
+                            WHERE num_entities > 0
+                            """
+                        )
                     else:
-                        if include_counts:
-                            cursor = await self.conn.execute(
-                                """
-                                SELECT entity_type, type_description, num_entities
-                                FROM entity_types
-                                """
-                            )
-                        else:
-                            cursor = await self.conn.execute(
-                                """
-                                SELECT entity_type, type_description
-                                FROM entity_types
-                                """
-                            )
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description
+                            FROM entity_types
+                            WHERE num_entities > 0
+                            """
+                        )
+                else:
+                    if include_counts:
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description, num_entities
+                            FROM entity_types
+                            """
+                        )
+                    else:
+                        cursor = await self.conn.execute(
+                            """
+                            SELECT entity_type, type_description
+                            FROM entity_types
+                            """
+                        )
                 existing_entity_types = await cursor.fetchall()
                 await cursor.close()
                 if existing_entity_types is None:
@@ -381,17 +645,16 @@ class DotVectorDB:
     async def get_specific_entity_types(self, entity_types):
         self.__require_open_connection()
         try:
-            async with self.lock:
-                placeholders = ', '.join('?' for _ in entity_types)
-                query = f"""
-                    SELECT entity_type, type_description
-                    FROM entity_types
-                    WHERE entity_type IN ({placeholders})
-                """
-                cursor = await self.conn.execute(query, tuple(entity_types))
-                rows = await cursor.fetchall()
-                await cursor.close()
-                return {row[0]: row[1] for row in rows}
+            placeholders = ', '.join('?' for _ in entity_types)
+            query = f"""
+                SELECT entity_type, type_description
+                FROM entity_types
+                WHERE entity_type IN ({placeholders})
+            """
+            cursor = await self.conn.execute(query, tuple(entity_types))
+            rows = await cursor.fetchall()
+            await cursor.close()
+            return {row[0]: row[1] for row in rows}
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the get_specific_entity_types function inside DotVectorDB: {e}")
@@ -435,28 +698,27 @@ class DotVectorDB:
             """Gets the global configuration metadata from the database"""
             self.__require_open_connection()
             try:
-                async with self.lock:
-                    cursor = await self.conn.execute(
-                        """
-                        SELECT current_version_count, description_version, description, DIM, embedding_model_id, num_chunks, num_entities, num_relations
-                        FROM global_config
-                        WHERE id = 1
-                        """
-                    )
-                    global_config = await cursor.fetchone()
-                    await cursor.close()
-                    if global_config is None:
-                        raise RuntimeError("Global configuration not found in the database. One should always exist!")
-                    return {
-                        "current_version_count": global_config[0],
-                        "description_version": global_config[1],
-                        "description": global_config[2],
-                        "DIM": global_config[3],
-                        "embedding_model_id": global_config[4],
-                        "num_chunks": global_config[5],
-                        "num_entities": global_config[6],
-                        "num_relations": global_config[7]
-                    }
+                cursor = await self.conn.execute(
+                    """
+                    SELECT current_version_count, description_version, description, DIM, embedding_model_id, num_chunks, num_entities, num_relations
+                    FROM global_config
+                    WHERE id = 1
+                    """
+                )
+                global_config = await cursor.fetchone()
+                await cursor.close()
+                if global_config is None:
+                    raise RuntimeError("Global configuration not found in the database. One should always exist!")
+                return {
+                    "current_version_count": global_config[0],
+                    "description_version": global_config[1],
+                    "description": global_config[2],
+                    "DIM": global_config[3],
+                    "embedding_model_id": global_config[4],
+                    "num_chunks": global_config[5],
+                    "num_entities": global_config[6],
+                    "num_relations": global_config[7]
+                }
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the get_global_config function inside DotVectorDB: {e}")
@@ -464,48 +726,201 @@ class DotVectorDB:
         """Given an entity_id, this function retrieves all associated chunks from the database."""
         self.__require_open_connection()
         try:
-            async with self.lock:
-                cursor = await self.conn.execute(
-                    """
-                    SELECT chunk.*
-                    FROM chunk
-                    JOIN chunk_to_entity_mapping
-                        ON chunk.chunk_id = chunk_to_entity_mapping.chunk_id
-                    WHERE chunk_to_entity_mapping.entity_id = ?
-                    """,
-                    (entity_id,)
-                )
-                rows = await cursor.fetchall()
-                column_names = [description[0] for description in cursor.description]
-                await cursor.close()
-                return [dict(zip(column_names, row)) for row in rows]
+            cursor = await self.conn.execute(
+                """
+                SELECT chunk.*
+                FROM chunk
+                JOIN chunk_to_entity_mapping
+                    ON chunk.chunk_id = chunk_to_entity_mapping.chunk_id
+                WHERE chunk_to_entity_mapping.entity_id = ?
+                """,
+                (entity_id,)
+            )
+            rows = await cursor.fetchall()
+            column_names = [description[0] for description in cursor.description]
+            await cursor.close()
+            return [dict(zip(column_names, row)) for row in rows]
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the get_chunks_associated_with_entity_id function inside DotVectorDB: {e}")
+    async def get_chunks_associated_with_entity_ids(self, entity_ids):
+        """Return the unique chunks associated with any supplied entity ID."""
+        self.__require_open_connection()
+        if not isinstance(entity_ids, list):
+            raise TypeError("entity_ids must be a list")
+        if any(
+            not isinstance(entity_id, int) or isinstance(entity_id, bool)
+            for entity_id in entity_ids
+        ):
+            raise TypeError("every entity_id must be an integer")
+        if not entity_ids:
+            return []
+
+        unique_entity_ids = list(dict.fromkeys(entity_ids))
+        chunks_by_id = {}
+        batch_size = 10_000
+        try:
+            for start in range(0, len(unique_entity_ids), batch_size):
+                batch = unique_entity_ids[start:start + batch_size]
+                placeholders = ", ".join("?" for _ in batch)
+                cursor = await self.conn.execute(
+                    f"""
+                    SELECT DISTINCT chunk.*
+                    FROM chunk
+                    JOIN chunk_to_entity_mapping AS mapping
+                        ON chunk.chunk_id = mapping.chunk_id
+                    WHERE mapping.entity_id IN ({placeholders})
+                    ORDER BY chunk.chunk_id
+                    """,
+                    batch,
+                )
+                rows = await cursor.fetchall()
+                column_names = [
+                    description[0] for description in cursor.description
+                ]
+                await cursor.close()
+                for row in rows:
+                    chunk = dict(zip(column_names, row))
+                    chunks_by_id[chunk["chunk_id"]] = chunk
+            return [
+                chunks_by_id[chunk_id]
+                for chunk_id in sorted(chunks_by_id)
+            ]
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(
+                "Error in the get_chunks_associated_with_entity_ids "
+                f"function inside DotVectorDB: {e}"
+            ) from e
+    async def get_chunks_associated_with_relationship_ids(
+        self,
+        relationship_ids,
+    ):
+        """Return the unique chunks associated with any relationship ID."""
+        self.__require_open_connection()
+        if not isinstance(relationship_ids, list):
+            raise TypeError("relationship_ids must be a list")
+        if any(
+            not isinstance(relationship_id, int)
+            or isinstance(relationship_id, bool)
+            for relationship_id in relationship_ids
+        ):
+            raise TypeError("every relationship_id must be an integer")
+        if not relationship_ids:
+            return []
+
+        unique_relationship_ids = list(dict.fromkeys(relationship_ids))
+        chunks_by_id = {}
+        batch_size = 10_000
+        try:
+            for start in range(0, len(unique_relationship_ids), batch_size):
+                batch = unique_relationship_ids[start:start + batch_size]
+                placeholders = ", ".join("?" for _ in batch)
+                cursor = await self.conn.execute(
+                    f"""
+                    SELECT DISTINCT chunk.*
+                    FROM chunk
+                    JOIN chunk_to_relationship_mapping AS mapping
+                        ON chunk.chunk_id = mapping.chunk_id
+                    WHERE mapping.relation_id IN ({placeholders})
+                    ORDER BY chunk.chunk_id
+                    """,
+                    batch,
+                )
+                rows = await cursor.fetchall()
+                column_names = [
+                    description[0] for description in cursor.description
+                ]
+                await cursor.close()
+                for row in rows:
+                    chunk = dict(zip(column_names, row))
+                    chunks_by_id[chunk["chunk_id"]] = chunk
+            return [
+                chunks_by_id[chunk_id]
+                for chunk_id in sorted(chunks_by_id)
+            ]
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(
+                "Error in the get_chunks_associated_with_relationship_ids "
+                f"function inside DotVectorDB: {e}"
+            ) from e
     async def get_chunks_associated_with_two_entities(self, entity_id_one, entity_id_two):
         """Given two entity IDs, this function retrieves all associated chunks they have in common."""
         self.__require_open_connection()
         try:
-            async with self.lock:
-                cursor = await self.conn.execute(
-                    """
-                    SELECT chunk.*
-                    FROM chunk
-                    JOIN chunk_to_entity_mapping AS mapping_one
-                        ON chunk.chunk_id = mapping_one.chunk_id
-                    JOIN chunk_to_entity_mapping AS mapping_two
-                        ON chunk.chunk_id = mapping_two.chunk_id
-                    WHERE mapping_one.entity_id = ? AND mapping_two.entity_id = ?
-                    """,
-                    (entity_id_one, entity_id_two)
-                )
-                rows = await cursor.fetchall()
-                column_names = [description[0] for description in cursor.description]
-                await cursor.close()
-                return [dict(zip(column_names, row)) for row in rows]
+            cursor = await self.conn.execute(
+                """
+                SELECT chunk.*
+                FROM chunk
+                JOIN chunk_to_entity_mapping AS mapping_one
+                    ON chunk.chunk_id = mapping_one.chunk_id
+                JOIN chunk_to_entity_mapping AS mapping_two
+                    ON chunk.chunk_id = mapping_two.chunk_id
+                WHERE mapping_one.entity_id = ? AND mapping_two.entity_id = ?
+                """,
+                (entity_id_one, entity_id_two)
+            )
+            rows = await cursor.fetchall()
+            column_names = [description[0] for description in cursor.description]
+            await cursor.close()
+            return [dict(zip(column_names, row)) for row in rows]
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the get_chunks_associated_with_entity_id function inside DotVectorDB: {e}")
+    async def get_entities_and_rels_associated_with_chunk_id(self, chunk_id):
+        """Return all entities and relationships mapped to a chunk."""
+        self.__require_open_connection()
+        try:
+            entity_cursor = await self.conn.execute(
+                """
+                SELECT entity.*
+                FROM entity
+                JOIN chunk_to_entity_mapping
+                    ON entity.entity_id = chunk_to_entity_mapping.entity_id
+                WHERE chunk_to_entity_mapping.chunk_id = ?
+                """,
+                (chunk_id,),
+            )
+            entity_rows = await entity_cursor.fetchall()
+            entity_columns = [
+                description[0] for description in entity_cursor.description
+            ]
+            await entity_cursor.close()
+
+            relationship_cursor = await self.conn.execute(
+                """
+                SELECT relationship.*
+                FROM relationship
+                JOIN chunk_to_relationship_mapping
+                    ON relationship.relation_id =
+                        chunk_to_relationship_mapping.relation_id
+                WHERE chunk_to_relationship_mapping.chunk_id = ?
+                """,
+                (chunk_id,),
+            )
+            relationship_rows = await relationship_cursor.fetchall()
+            relationship_columns = [
+                description[0]
+                for description in relationship_cursor.description
+            ]
+            await relationship_cursor.close()
+
+            return {
+                "entities": [
+                    dict(zip(entity_columns, row)) for row in entity_rows
+                ],
+                "relationships": [
+                    dict(zip(relationship_columns, row))
+                    for row in relationship_rows
+                ],
+            }
+        except Exception as e:
+            traceback.print_exc()
+            raise RuntimeError(
+                "Error in the get_entities_and_rels_associated_with_chunk_id "
+                f"function inside DotVectorDB: {e}"
+            ) from e
     ############################################################
     #   Functions For Adding Text Content to the Database      # 
     ############################################################
@@ -572,7 +987,7 @@ class DotVectorDB:
             raise RuntimeError(f"Error in the add_metadata_content function inside DotVectorDB: {e}")
     async def add_chunk(self, content, source_name, model_name) -> None:
         self.__require_open_connection()
-        content_hash = f"""{self.hashing_func.content_hash(content)}"""
+        content_hash = self.hashing_func.content_hash(content)
         source_hash = f"""{self.hashing_func.content_hash(source_name)}"""
         model_hash = f"""{self.hashing_func.content_hash(model_name)}"""
         await self.add_metadata_content(table="source", name=source_name)
@@ -1192,9 +1607,131 @@ class DotVectorDB:
             traceback.print_exc()
             raise RuntimeError(f"Error in the compare_two_entities function inside DotVectorDB: {e}")
         return (comparsion_entity_id, comparsion_entity_name), similarity_score
+    async def _get_cached_query_embedding(
+        self,
+        query,
+        query_hash,
+        embedding_model_id,
+    ):
+        """Return a cached query embedding, or None when no valid row exists."""
+        async with self.conn.execute(
+            """
+            SELECT embedding, dimensions
+            FROM query_embeddings
+            WHERE query_hash = ?
+              AND embedding_model_id = ?
+              AND query = ?
+            """,
+            (query_hash, embedding_model_id, query),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+
+        embedding = np.frombuffer(row[0], dtype=np.float32).copy()
+        stored_dimensions = row[1]
+        if (
+            embedding.shape[-1] != stored_dimensions
+            or embedding.shape[-1] != self.DIM
+        ):
+            return None
+        return embedding
+
+    async def _create_and_cache_query_embedding(
+        self,
+        query,
+        query_hash,
+        embedding_model_id,
+    ):
+        """Embed one cache miss and persist the result."""
+        cached_embedding = await self._get_cached_query_embedding(
+            query=query,
+            query_hash=query_hash,
+            embedding_model_id=embedding_model_id,
+        )
+        if cached_embedding is not None:
+            return cached_embedding, 0
+
+        embedding, query_tokens = await self.embedding_model.embed(query)
+        embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if embedding.shape[-1] != self.DIM:
+            raise RuntimeError(
+                "Query embedding dimension mismatch: "
+                f"expected {self.DIM}, got {embedding.shape[-1]}"
+            )
+
+        async with self.lock:
+            await self.conn.execute(
+                """
+                INSERT OR REPLACE INTO query_embeddings (
+                    query_hash,
+                    embedding_model_id,
+                    query,
+                    embedding,
+                    dimensions,
+                    tokens
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    query_hash,
+                    embedding_model_id,
+                    query,
+                    embedding.tobytes(),
+                    embedding.shape[-1],
+                    query_tokens,
+                ),
+            )
+            await self.conn.commit()
+        return embedding, query_tokens
+
+    async def _get_or_create_query_embedding(self, query):
+        """Reuse an exact query embedding and coalesce concurrent cache misses."""
+        if not isinstance(query, str):
+            raise TypeError("query must be a string")
+
+        query_hash = self.hashing_func.content_hash(query)
+        embedding_model_id = str(
+            self.hashing_func.content_hash(self.embedding_model.model_name)
+        )
+        cached_embedding = await self._get_cached_query_embedding(
+            query=query,
+            query_hash=query_hash,
+            embedding_model_id=embedding_model_id,
+        )
+        if cached_embedding is not None:
+            return cached_embedding, 0
+
+        cache_key = (query_hash, embedding_model_id, query)
+        created_task = False
+        async with self._query_embedding_tasks_lock:
+            task = self._query_embedding_tasks.get(cache_key)
+            if task is None:
+                task = asyncio.create_task(
+                    self._create_and_cache_query_embedding(
+                        query=query,
+                        query_hash=query_hash,
+                        embedding_model_id=embedding_model_id,
+                    )
+                )
+                self._query_embedding_tasks[cache_key] = task
+                created_task = True
+
+        try:
+            embedding, query_tokens = await task
+            if not created_task:
+                query_tokens = 0
+            return embedding, query_tokens
+        finally:
+            async with self._query_embedding_tasks_lock:
+                if self._query_embedding_tasks.get(cache_key) is task:
+                    del self._query_embedding_tasks[cache_key]
+
     async def vector_search(self, query, table, top_k=40, embedding_table=None, KNN=True, distance_metric="l2") -> tuple[list[dict], int]:
             self.__require_open_connection()
-            query_embedding, query_tokens = await self.embedding_model.embed(query)
+            query_embedding, query_tokens = (
+                await self._get_or_create_query_embedding(query)
+            )
             distance_func = self.__get_distance_func(distance_metric)
             if embedding_table is None:
                 embedding_table = f"{table}_embeddings"
@@ -1243,7 +1780,592 @@ class DotVectorDB:
             except Exception as e:
                 traceback.print_exc()
                 raise RuntimeError(f"Error in the vector_search function inside DotVectorDB: {e}")
-            return [dict(zip(column_names, row)) for row in rows], query_tokens
+            results = [dict(zip(column_names, row)) for row in rows]
+            return_fields = {
+                "chunk": (
+                    "vector_rowid", "chunk_id", "source_id", "content",
+                    "similarity_score",
+                ),
+                "entity": (
+                    "vector_rowid", "entity_id", "entity_name",
+                    "entity_description", "entity_types", "similarity_score",
+                ),
+                "relationship": (
+                    "vector_rowid", "relation_id", "src_entity_id",
+                    "dst_entity_id", "relation_description", "similarity_score",
+                ),
+            }
+            if table not in return_fields:
+                raise ValueError(
+                    "table must be 'chunk', 'entity', or 'relationship'"
+                )
+            if table == "entity" and results:
+                entity_ids = [result["entity_id"] for result in results]
+                placeholders = ", ".join("?" for _ in entity_ids)
+                entity_types = {entity_id: [] for entity_id in entity_ids}
+                async with self.conn.execute(
+                    f"""
+                    SELECT entity_id, entity_type
+                    FROM entity_to_entity_type_mapping
+                    WHERE entity_id IN ({placeholders})
+                    ORDER BY entity_id, entity_type
+                    """,
+                    entity_ids,
+                ) as cursor:
+                    for entity_id, entity_type in await cursor.fetchall():
+                        entity_types[entity_id].append(entity_type)
+                for result in results:
+                    result["entity_types"] = entity_types[result["entity_id"]]
+            results = [
+                {field: result[field] for field in return_fields[table]}
+                for result in results
+            ]
+            return results, query_tokens
+
+    async def vector_search_id_batch(
+        self,
+        query,
+        table,
+        rowids,
+        top_k=None,
+        embedding_table=None,
+        distance_metric="l2",
+        search_type="hybrid",
+    ) -> tuple[list[dict], int]:
+            """Search only the supplied SQLite rowids.
+
+            ``search_type`` may be ``"vector"``, ``"bm25"``, or
+            ``"hybrid"``. Hybrid search combines vector and BM25 ranks with
+            reciprocal rank fusion.
+            """
+            self.__require_open_connection()
+            if table not in {"chunk", "entity", "relationship"}:
+                raise ValueError(
+                    "table must be 'chunk', 'entity', or 'relationship'"
+                )
+            if not isinstance(search_type, str):
+                raise TypeError("search_type must be a string")
+            search_type = search_type.strip().lower()
+            if search_type not in {"vector", "bm25", "hybrid"}:
+                raise ValueError(
+                    "search_type must be 'vector', 'bm25', or 'hybrid'"
+                )
+            if not isinstance(query, str):
+                raise TypeError("query must be a string")
+            if not isinstance(rowids, list):
+                raise TypeError("rowids must be a list")
+            if not rowids:
+                return [], 0
+            if any(
+                not isinstance(rowid, int) or isinstance(rowid, bool)
+                for rowid in rowids
+            ):
+                raise TypeError("every rowid must be an integer")
+
+            unique_rowids = list(dict.fromkeys(rowids))
+            if top_k is None:
+                top_k = len(unique_rowids)
+            if (
+                not isinstance(top_k, int)
+                or isinstance(top_k, bool)
+                or top_k <= 0
+            ):
+                raise ValueError("top_k must be a positive integer or None")
+
+            if embedding_table is None:
+                embedding_table = f"{table}_embeddings"
+
+            rowid_parameters = {
+                f"rowid_{index}": rowid
+                for index, rowid in enumerate(unique_rowids)
+            }
+            rowid_placeholders = ", ".join(
+                f":rowid_{index}" for index in range(len(unique_rowids))
+            )
+            result_limit = min(top_k, len(unique_rowids))
+
+            async def run_vector_search(limit):
+                query_embedding, query_tokens = (
+                    await self._get_or_create_query_embedding(query)
+                )
+                distance_func = self.__get_distance_func(distance_metric)
+                sql = f"""
+                SELECT
+                    v.rowid AS vector_rowid,
+                    m.*,
+                    1.0 / (
+                        1.0 + {distance_func}(
+                            :query_embedding,
+                            v.embedding
+                        )
+                    ) AS similarity_score
+                FROM {embedding_table} AS v
+                JOIN {table} AS m
+                    ON m.rowid = v.rowid
+                WHERE v.rowid IN ({rowid_placeholders})
+                ORDER BY similarity_score DESC
+                LIMIT :top_k;
+                """
+                parameters = {
+                    "query_embedding": query_embedding,
+                    "top_k": limit,
+                    **rowid_parameters,
+                }
+                async with self.conn.execute(sql, parameters) as cursor:
+                    rows = await cursor.fetchall()
+                    column_names = [
+                        description[0] for description in cursor.description
+                    ]
+                return [dict(zip(column_names, row)) for row in rows], query_tokens
+
+            async def run_bm25_search(limit):
+                query_terms = list(dict.fromkeys(
+                    re.findall(r"\w+", query.casefold())
+                ))
+                if not query_terms:
+                    return []
+
+                # The candidate IDs are already known, so score only their
+                # text instead of running a global FTS MATCH and intersecting
+                # its potentially huge posting lists afterward.
+                sql = f"""
+                SELECT
+                    records.rowid AS bm25_rowid,
+                    records.*
+                FROM {table} AS records
+                WHERE records.rowid IN ({rowid_placeholders});
+                """
+                async with self.conn.execute(
+                    sql,
+                    rowid_parameters,
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    column_names = [
+                        description[0] for description in cursor.description
+                    ]
+                if not rows:
+                    return []
+
+                text_fields = {
+                    "chunk": ("content",),
+                    "entity": (
+                        "entity_name",
+                        "entity_description",
+                    ),
+                    "relationship": ("relation_description",),
+                }[table]
+
+                def score_candidates_locally():
+                    candidates = [
+                        dict(zip(column_names, row)) for row in rows
+                    ]
+                    tokenized_documents = []
+                    document_frequencies = {
+                        term: 0 for term in query_terms
+                    }
+                    for candidate in candidates:
+                        document_text = " ".join(
+                            str(candidate.get(field) or "")
+                            for field in text_fields
+                        )
+                        document_tokens = re.findall(
+                            r"\w+",
+                            document_text.casefold(),
+                        )
+                        tokenized_documents.append(document_tokens)
+                        document_terms = set(document_tokens)
+                        for term in query_terms:
+                            if term in document_terms:
+                                document_frequencies[term] += 1
+
+                    document_count = len(candidates)
+                    average_document_length = (
+                        sum(
+                            len(tokens)
+                            for tokens in tokenized_documents
+                        )
+                        / document_count
+                    )
+                    if average_document_length == 0:
+                        return []
+
+                    k1 = 1.5
+                    b = 0.75
+                    scored_candidates = []
+                    for candidate, document_tokens in zip(
+                        candidates,
+                        tokenized_documents,
+                    ):
+                        term_frequencies = {}
+                        for token in document_tokens:
+                            term_frequencies[token] = (
+                                term_frequencies.get(token, 0) + 1
+                            )
+                        length_normalization = (
+                            1.0 - b
+                            + b
+                            * len(document_tokens)
+                            / average_document_length
+                        )
+                        score = 0.0
+                        for term in query_terms:
+                            term_frequency = term_frequencies.get(term, 0)
+                            if term_frequency == 0:
+                                continue
+                            document_frequency = document_frequencies[term]
+                            inverse_document_frequency = math.log(
+                                1.0
+                                + (
+                                    document_count
+                                    - document_frequency
+                                    + 0.5
+                                )
+                                / (document_frequency + 0.5)
+                            )
+                            score += inverse_document_frequency * (
+                                term_frequency * (k1 + 1.0)
+                                / (
+                                    term_frequency
+                                    + k1 * length_normalization
+                                )
+                            )
+                        if score > 0:
+                            candidate["bm25_score"] = score
+                            scored_candidates.append(candidate)
+
+                    scored_candidates.sort(
+                        key=lambda candidate: (
+                            -candidate["bm25_score"],
+                            candidate["bm25_rowid"],
+                        )
+                    )
+                    return scored_candidates[:limit]
+
+                return await asyncio.to_thread(score_candidates_locally)
+
+            vector_return_fields = {
+                "chunk": (
+                    "vector_rowid", "chunk_id", "source_id", "content",
+                    "similarity_score",
+                ),
+                "entity": (
+                    "vector_rowid", "entity_id", "entity_name",
+                    "entity_description", "entity_types", "similarity_score",
+                ),
+                "relationship": (
+                    "vector_rowid", "relation_id", "src_entity_id",
+                    "dst_entity_id", "relation_description", "similarity_score",
+                ),
+            }
+            bm25_return_fields = {
+                "chunk": (
+                    "bm25_rowid", "chunk_id", "source_id", "content",
+                    "bm25_score",
+                ),
+                "entity": (
+                    "bm25_rowid", "entity_id", "entity_name",
+                    "entity_description", "entity_types", "bm25_score",
+                ),
+                "relationship": (
+                    "bm25_rowid", "relation_id", "src_entity_id",
+                    "dst_entity_id", "relation_description", "bm25_score",
+                ),
+            }
+            hybrid_return_fields = {
+                "chunk": (
+                    "vector_rowid", "bm25_rowid", "chunk_id", "source_id",
+                    "content", "similarity_score", "bm25_score", "rrf_score",
+                ),
+                "entity": (
+                    "vector_rowid", "bm25_rowid", "entity_id", "entity_name",
+                    "entity_description", "entity_types", "similarity_score",
+                    "bm25_score", "rrf_score",
+                ),
+                "relationship": (
+                    "vector_rowid", "bm25_rowid", "relation_id",
+                    "src_entity_id", "dst_entity_id", "relation_description",
+                    "similarity_score", "bm25_score", "rrf_score",
+                ),
+            }
+
+            try:
+                if search_type == "vector":
+                    results, query_tokens = await run_vector_search(
+                        result_limit
+                    )
+                    return_fields = vector_return_fields
+                elif search_type == "bm25":
+                    results = await run_bm25_search(result_limit)
+                    query_tokens = 0
+                    return_fields = bm25_return_fields
+                else:
+                    candidate_k = min(
+                        top_k * 2,
+                        len(unique_rowids),
+                    )
+                    (vector_results, query_tokens), bm25_results = (
+                        await asyncio.gather(
+                            run_vector_search(candidate_k),
+                            run_bm25_search(candidate_k),
+                        )
+                    )
+                    rrf_k = 60
+                    fused_results = {}
+                    for rank, result in enumerate(
+                        vector_results,
+                        start=1,
+                    ):
+                        rowid = result["vector_rowid"]
+                        fused_results[rowid] = {
+                            "result": dict(result),
+                            "rrf_score": 1.0 / (rrf_k + rank),
+                        }
+                    for rank, result in enumerate(
+                        bm25_results,
+                        start=1,
+                    ):
+                        rowid = result["bm25_rowid"]
+                        score = 1.0 / (rrf_k + rank)
+                        if rowid in fused_results:
+                            fused_results[rowid]["rrf_score"] += score
+                            fused_results[rowid]["result"].update({
+                                "bm25_rowid": rowid,
+                                "bm25_score": result["bm25_score"],
+                            })
+                        else:
+                            bm25_result = dict(result)
+                            bm25_result.update({
+                                "vector_rowid": rowid,
+                                "similarity_score": None,
+                            })
+                            fused_results[rowid] = {
+                                "result": bm25_result,
+                                "rrf_score": score,
+                            }
+                    ranked_results = sorted(
+                        fused_results.values(),
+                        key=lambda item: item["rrf_score"],
+                        reverse=True,
+                    )[:result_limit]
+                    results = []
+                    for ranked_result in ranked_results:
+                        result = ranked_result["result"]
+                        result.setdefault(
+                            "bm25_rowid",
+                            result["vector_rowid"],
+                        )
+                        result.setdefault("bm25_score", None)
+                        result["rrf_score"] = ranked_result["rrf_score"]
+                        results.append(result)
+                    return_fields = hybrid_return_fields
+            except Exception as e:
+                traceback.print_exc()
+                raise RuntimeError(
+                    "Error in the vector_search_id_batch function inside "
+                    f"DotVectorDB: {e}"
+                ) from e
+
+            if table == "entity" and results:
+                entity_ids = [result["entity_id"] for result in results]
+                placeholders = ", ".join("?" for _ in entity_ids)
+                entity_types = {entity_id: [] for entity_id in entity_ids}
+                async with self.conn.execute(
+                    f"""
+                    SELECT entity_id, entity_type
+                    FROM entity_to_entity_type_mapping
+                    WHERE entity_id IN ({placeholders})
+                    ORDER BY entity_id, entity_type
+                    """,
+                    entity_ids,
+                ) as cursor:
+                    for entity_id, entity_type in await cursor.fetchall():
+                        entity_types[entity_id].append(entity_type)
+                for result in results:
+                    result["entity_types"] = entity_types[result["entity_id"]]
+            results = [
+                {field: result[field] for field in return_fields[table]}
+                for result in results
+            ]
+            return results, query_tokens
+
+    async def one_hop_search(
+        self,
+        node_id,
+        query,
+        search_type="hybrid",
+        top_k=40,
+        distance_metric="l2",
+    ) -> tuple[list[dict], int]:
+            """Rank the entities directly adjacent to one entity node."""
+            self.__require_open_connection()
+            if not isinstance(node_id, int) or isinstance(node_id, bool):
+                raise TypeError("node_id must be an integer")
+            if not isinstance(query, str):
+                raise TypeError("query must be a string")
+            if not isinstance(search_type, str):
+                raise TypeError("search_type must be a string")
+            search_type = search_type.strip().lower()
+            if search_type not in {"vector", "bm25", "hybrid"}:
+                raise ValueError(
+                    "search_type must be 'vector', 'bm25', or 'hybrid'"
+                )
+            if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+                raise ValueError("top_k must be a positive integer")
+
+            cursor = await self.conn.execute(
+                """
+                SELECT DISTINCT
+                    CASE
+                        WHEN src_entity_id = ? THEN dst_entity_id
+                        ELSE src_entity_id
+                    END AS adjacent_entity_id
+                FROM relationship
+                WHERE src_entity_id = ? OR dst_entity_id = ?
+                """,
+                (node_id, node_id, node_id),
+            )
+            adjacent_rowids = [row[0] for row in await cursor.fetchall()]
+            await cursor.close()
+            if not adjacent_rowids:
+                return [], 0
+
+            async def search_adjacent_entities_with_bm25(limit):
+                search_terms = query.split()
+                if not search_terms:
+                    return []
+                fts_query = " OR ".join(
+                    f'"{term.replace(chr(34), chr(34) * 2)}"'
+                    for term in search_terms
+                )
+                rowid_parameters = {
+                    f"rowid_{index}": rowid
+                    for index, rowid in enumerate(adjacent_rowids)
+                }
+                rowid_placeholders = ", ".join(
+                    f":rowid_{index}"
+                    for index in range(len(adjacent_rowids))
+                )
+                parameters = {
+                    "fts_query": fts_query,
+                    "top_k": min(limit, len(adjacent_rowids)),
+                    **rowid_parameters,
+                }
+                bm25_cursor = await self.conn.execute(
+                    f"""
+                    SELECT
+                        fts.rowid AS bm25_rowid,
+                        records.entity_id,
+                        records.entity_name,
+                        records.entity_description,
+                        bm25(entity_fts) AS bm25_score
+                    FROM entity_fts AS fts
+                    JOIN entity AS records
+                        ON records.rowid = fts.rowid
+                    WHERE entity_fts MATCH :fts_query
+                      AND fts.rowid IN ({rowid_placeholders})
+                    ORDER BY bm25_score ASC
+                    LIMIT :top_k
+                    """,
+                    parameters,
+                )
+                rows = await bm25_cursor.fetchall()
+                column_names = [
+                    description[0]
+                    for description in bm25_cursor.description
+                ]
+                await bm25_cursor.close()
+                results = [dict(zip(column_names, row)) for row in rows]
+                if results:
+                    entity_ids = [result["entity_id"] for result in results]
+                    placeholders = ", ".join("?" for _ in entity_ids)
+                    entity_types = {
+                        entity_id: [] for entity_id in entity_ids
+                    }
+                    type_cursor = await self.conn.execute(
+                        f"""
+                        SELECT entity_id, entity_type
+                        FROM entity_to_entity_type_mapping
+                        WHERE entity_id IN ({placeholders})
+                        ORDER BY entity_id, entity_type
+                        """,
+                        entity_ids,
+                    )
+                    for entity_id, entity_type in await type_cursor.fetchall():
+                        entity_types[entity_id].append(entity_type)
+                    await type_cursor.close()
+                    for result in results:
+                        result["entity_types"] = entity_types[
+                            result["entity_id"]
+                        ]
+                return results
+
+            if search_type == "vector":
+                return await self.vector_search_id_batch(
+                    query=query,
+                    table="entity",
+                    rowids=adjacent_rowids,
+                    top_k=top_k,
+                    distance_metric=distance_metric,
+                )
+
+            if search_type == "bm25":
+                return await search_adjacent_entities_with_bm25(top_k), 0
+
+            candidate_k = min(top_k * 2, len(adjacent_rowids))
+            (vector_results, query_tokens), bm25_results = (
+                await asyncio.gather(
+                    self.vector_search_id_batch(
+                        query=query,
+                        table="entity",
+                        rowids=adjacent_rowids,
+                        top_k=candidate_k,
+                        distance_metric=distance_metric,
+                    ),
+                    search_adjacent_entities_with_bm25(candidate_k),
+                )
+            )
+            rrf_k = 60
+            fused_results = {}
+            for rank, result in enumerate(vector_results, start=1):
+                entity_id = result["entity_id"]
+                fused_results[entity_id] = {
+                    "result": dict(result),
+                    "rrf_score": 1.0 / (rrf_k + rank),
+                }
+            for rank, result in enumerate(bm25_results, start=1):
+                entity_id = result["entity_id"]
+                score = 1.0 / (rrf_k + rank)
+                if entity_id in fused_results:
+                    fused_results[entity_id]["rrf_score"] += score
+                    fused_results[entity_id]["result"]["bm25_rowid"] = (
+                        result["bm25_rowid"]
+                    )
+                    fused_results[entity_id]["result"]["bm25_score"] = (
+                        result["bm25_score"]
+                    )
+                else:
+                    bm25_result = dict(result)
+                    bm25_result["vector_rowid"] = result["bm25_rowid"]
+                    bm25_result["similarity_score"] = None
+                    fused_results[entity_id] = {
+                        "result": bm25_result,
+                        "rrf_score": score,
+                    }
+
+            ranked_results = sorted(
+                fused_results.values(),
+                key=lambda item: item["rrf_score"],
+                reverse=True,
+            )[:top_k]
+            results = []
+            for ranked_result in ranked_results:
+                result = ranked_result["result"]
+                result.setdefault("bm25_rowid", result["vector_rowid"])
+                result.setdefault("bm25_score", None)
+                result["rrf_score"] = ranked_result["rrf_score"]
+                results.append(result)
+            return results, query_tokens
+
     async def construct_temp_graph(self, relationship_ids) -> igraph.Graph:
         self.__require_open_connection()
         self.__require_graph_retriever()
@@ -1350,30 +2472,66 @@ class DotVectorDB:
                 for term in search_terms
             )
             index_name = f"{table_name}_fts"
-            async with self.lock:
-                cursor = await self.conn.execute(
+            cursor = await self.conn.execute(
+                f"""
+                SELECT
+                    fts.rowid AS bm25_rowid,
+                    records.*,
+                    bm25({index_name}) AS bm25_score
+                FROM {index_name} AS fts
+                JOIN {table_name} AS records
+                    ON records.rowid = fts.rowid
+                WHERE {index_name} MATCH ?
+                ORDER BY bm25_score ASC
+                LIMIT ?
+                """,
+                (fts_query, top_k)
+            )
+            rows = await cursor.fetchall()
+            column_names = [description[0] for description in cursor.description]
+            results = [dict(zip(column_names, row)) for row in rows]
+            return_fields = {
+                "chunk": (
+                    "bm25_rowid", "chunk_id", "source_id", "content",
+                    "bm25_score",
+                ),
+                "entity": (
+                    "bm25_rowid", "entity_id", "entity_name",
+                    "entity_description", "entity_types", "bm25_score",
+                ),
+                "relationship": (
+                    "bm25_rowid", "relation_id", "src_entity_id",
+                    "dst_entity_id", "relation_description", "bm25_score",
+                ),
+            }
+            if table_name == "entity" and results:
+                entity_ids = [result["entity_id"] for result in results]
+                placeholders = ", ".join("?" for _ in entity_ids)
+                entity_types = {entity_id: [] for entity_id in entity_ids}
+                async with self.conn.execute(
                     f"""
-                    SELECT
-                        fts.rowid AS bm25_rowid,
-                        records.*,
-                        bm25({index_name}) AS bm25_score
-                    FROM {index_name} AS fts
-                    JOIN {table_name} AS records
-                        ON records.rowid = fts.rowid
-                    WHERE {index_name} MATCH ?
-                    ORDER BY bm25_score ASC
-                    LIMIT ?
+                    SELECT entity_id, entity_type
+                    FROM entity_to_entity_type_mapping
+                    WHERE entity_id IN ({placeholders})
+                    ORDER BY entity_id, entity_type
                     """,
-                    (fts_query, top_k)
-                )
-                rows = await cursor.fetchall()
-                column_names = [description[0] for description in cursor.description]
-                return [dict(zip(column_names, row)) for row in rows], 0
+                    entity_ids,
+                ) as type_cursor:
+                    for entity_id, entity_type in await type_cursor.fetchall():
+                        entity_types[entity_id].append(entity_type)
+                for result in results:
+                    result["entity_types"] = entity_types[result["entity_id"]]
+            results = [
+                {field: result[field] for field in return_fields[table_name]}
+                for result in results
+            ]
+            return results, 0
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(
                 f"Error in the search_BM25 function inside DotVectorDB: {e}"
             )
+
     ############################################################
     #   Hybrid Vector and BM25 Search                          # 
     ############################################################
@@ -1438,6 +2596,30 @@ class DotVectorDB:
                     result["rrf_score"] = ranked_result["rrf_score"]
                     results.append(result)
 
+                return_fields = {
+                    "chunk": (
+                        "vector_rowid", "bm25_rowid", "chunk_id", "source_id",
+                        "content", "similarity_score", "bm25_score", "rrf_score",
+                    ),
+                    "entity": (
+                        "vector_rowid", "bm25_rowid", "entity_id", "entity_name",
+                        "entity_description", "entity_types", "similarity_score",
+                        "bm25_score", "rrf_score",
+                    ),
+                    "relationship": (
+                        "vector_rowid", "bm25_rowid", "relation_id",
+                        "src_entity_id", "dst_entity_id", "relation_description",
+                        "similarity_score", "bm25_score", "rrf_score",
+                    ),
+                }
+                if table not in return_fields:
+                    raise ValueError(
+                        "table must be 'chunk', 'entity', or 'relationship'"
+                    )
+                results = [
+                    {field: result[field] for field in return_fields[table]}
+                    for result in results
+                ]
                 return results, query_tokens
             except Exception as e:
                 traceback.print_exc()
@@ -1445,6 +2627,7 @@ class DotVectorDB:
                     "Error in the hybrid_vector_BM25_search function "
                     f"inside DotVectorDB: {e}"
                 )
+
     ############################################################
     #   Functions For Pre-Determined Graph Construction        # 
     ############################################################
@@ -1454,10 +2637,27 @@ class DotVectorDB:
         chunk_content: str,
     ) -> tuple[bool, list[str]]:
         """Require every normalized entity-name token to occur in the chunk."""
-        entity_tokens = set(re.findall(r"\w+", entity_name.casefold()))
-        chunk_tokens = set(re.findall(r"\w+", chunk_content.casefold()))
+        def normalize(value):
+            decomposed = unicodedata.normalize("NFKD", value.casefold())
+            return "".join(
+                character
+                for character in decomposed
+                if not unicodedata.combining(character)
+            )
+        entity_tokens = set(re.findall(r"\w+", normalize(entity_name)))
+        chunk_tokens = set(re.findall(r"\w+", normalize(chunk_content)))
         missing_tokens = sorted(entity_tokens - chunk_tokens)
         return bool(entity_tokens) and not missing_tokens, missing_tokens
+    # @staticmethod
+    # def __does_entity_name_overlap_chunk(
+    #     entity_name: str,
+    #     chunk_content: str,
+    # ) -> tuple[bool, list[str]]:
+    #     """Require every normalized entity-name token to occur in the chunk."""
+    #     entity_tokens = set(re.findall(r"\w+", entity_name.casefold()))
+    #     chunk_tokens = set(re.findall(r"\w+", chunk_content.casefold()))
+    #     missing_tokens = sorted(entity_tokens - chunk_tokens)
+    #     return bool(entity_tokens) and not missing_tokens, missing_tokens
 
     def __verify_source_json(self, source_json: list[dict]) -> dict[str, str]:
             """
@@ -1580,8 +2780,8 @@ class DotVectorDB:
                 seen_content.add(content)
             for chunk in chunk_json_list:
                 local_chunk_id = chunk["chunk_id"]
-                new_chunk_id = str(
-                    self.hashing_func.content_hash(chunk["content"])
+                new_chunk_id = self.hashing_func.content_hash(
+                    chunk["content"]
                 )
                 local_chunk_ids_to_new_chunk_ids[local_chunk_id] = new_chunk_id
                 chunk["chunk_id"] = new_chunk_id
@@ -1589,7 +2789,7 @@ class DotVectorDB:
             return local_chunk_ids_to_new_chunk_ids, chunk_json_list
     def __verify_prebuilt_entity_json(
             self,
-            local_chunks_to_new_chunks_ids: dict[str, str],
+            local_chunks_to_new_chunks_ids: dict[object, int],
             chunk_json: list[dict],
             entity_json: list[dict]
         ) -> tuple[dict, list[dict]]:
@@ -1842,7 +3042,7 @@ class DotVectorDB:
 
     def __verify_prebuilt_relationship_json(
             self,
-            old_chunk_id_to_new_chunk_id: dict[str, str],
+            old_chunk_id_to_new_chunk_id: dict,
             old_entity_id_to_new_entity_id: dict[str, str],
             chunk_json: list[dict],
             entity_json: list[dict],
@@ -2205,6 +3405,103 @@ class DotVectorDB:
                    "Error ingesting and embedding custom relationships: "
                    f"{e}"
                ) from e
+    async def __verify_custom_records_persisted(
+        self,
+        entity_json: list[dict],
+        relationship_json: list[dict],
+    ) -> bool:
+        """Verify every supplied custom record and chunk mapping was saved."""
+        expected_entity_ids = {entity["entity_id"] for entity in entity_json}
+        expected_relationship_ids = {
+            relationship["relation_id"] for relationship in relationship_json
+        }
+        expected_entity_mappings = {
+            (entity["chunk_id"], entity["entity_id"])
+            for entity in entity_json
+        }
+        expected_relationship_mappings = {
+            (relationship["chunk_id"], relationship["relation_id"])
+            for relationship in relationship_json
+        }
+
+        async with self.lock:
+            entity_cursor = await self.conn.execute(
+                "SELECT entity_id FROM entity"
+            )
+            saved_entity_ids = {row[0] for row in await entity_cursor.fetchall()}
+            await entity_cursor.close()
+
+            relationship_cursor = await self.conn.execute(
+                "SELECT relation_id FROM relationship"
+            )
+            saved_relationship_ids = {
+                row[0] for row in await relationship_cursor.fetchall()
+            }
+            await relationship_cursor.close()
+
+            entity_mapping_cursor = await self.conn.execute(
+                "SELECT chunk_id, entity_id FROM chunk_to_entity_mapping"
+            )
+            saved_entity_mappings = {
+                tuple(row) for row in await entity_mapping_cursor.fetchall()
+            }
+            await entity_mapping_cursor.close()
+
+            relationship_mapping_cursor = await self.conn.execute(
+                """
+                SELECT chunk_id, relation_id
+                FROM chunk_to_relationship_mapping
+                """
+            )
+            saved_relationship_mappings = {
+                tuple(row)
+                for row in await relationship_mapping_cursor.fetchall()
+            }
+            await relationship_mapping_cursor.close()
+
+        saved_expected_entity_ids = expected_entity_ids & saved_entity_ids
+        saved_expected_relationship_ids = (
+            expected_relationship_ids & saved_relationship_ids
+        )
+        missing_entities = expected_entity_ids - saved_entity_ids
+        missing_relationships = (
+            expected_relationship_ids - saved_relationship_ids
+        )
+        if len(saved_expected_entity_ids) != len(expected_entity_ids):
+            raise RuntimeError(
+                "Custom entity persistence count mismatch: expected "
+                f"{len(expected_entity_ids)} unique supplied entities, found "
+                f"{len(saved_expected_entity_ids)}; missing IDs: "
+                f"{sorted(missing_entities)}."
+            )
+        if len(saved_expected_relationship_ids) != len(
+            expected_relationship_ids
+        ):
+            raise RuntimeError(
+                "Custom relationship persistence count mismatch: expected "
+                f"{len(expected_relationship_ids)} unique supplied relationships, "
+                f"found {len(saved_expected_relationship_ids)}; missing IDs: "
+                f"{sorted(missing_relationships)}."
+            )
+
+        missing_entity_mappings = (
+            expected_entity_mappings - saved_entity_mappings
+        )
+        if missing_entity_mappings:
+            raise RuntimeError(
+                "Custom entity chunk mappings were not persisted: "
+                f"{sorted(missing_entity_mappings)}."
+            )
+        missing_relationship_mappings = (
+            expected_relationship_mappings - saved_relationship_mappings
+        )
+        if missing_relationship_mappings:
+            raise RuntimeError(
+                "Custom relationship chunk mappings were not persisted: "
+                f"{sorted(missing_relationship_mappings)}."
+            )
+        return True
+
     async def construct_custom_GraphRAG(self, chunks: list[dict], graph: igraph.Graph = None,  entities: list[dict] = None, rels_json: list[dict] = None, entity_types_json: dict[str, str] = None, debug_mode=False, async_cooldown=60, requests_per_minute=1000) -> None:
                    # First, validate the provided information before we make any llm or embedding calls.
                    try: 
@@ -2341,6 +3638,21 @@ class DotVectorDB:
                         raise RuntimeError(
                             "Error in construct_custom_GraphRAG while ingesting "
                             f"and embedding custom relationships: {e}"
+                        ) from e
+
+                   try:
+                        self.__graph_construction_print(
+                            "STEP NINE: VERIFYING CUSTOM GRAPH PERSISTENCE"
+                        )
+                        await self.__verify_custom_records_persisted(
+                            entity_json,
+                            relationship_json,
+                        )
+                   except Exception as e:
+                        traceback.print_exc()
+                        raise RuntimeError(
+                            "Error in construct_custom_GraphRAG while verifying "
+                            f"persisted custom records: {e}"
                         ) from e
 
                    # Fourth, generate and save a global description for each source document.
@@ -2500,6 +3812,7 @@ class DotVectorDB:
                 {
                     "content": content,
                     "source_id": str(chunk_id),
+                    "original_chunk_id": chunk_id,
                     "file_path": source_name,
                     "source_chunk_index": source_chunk_index,
                 }
@@ -2514,6 +3827,7 @@ class DotVectorDB:
             entities.append(
                 {
                     "entity_name": entity_name,
+                    "original_entity_id": entity_id,
                     "entity_type": ", ".join(
                         entity_types_by_id.get(entity_id, [])
                     ),
@@ -2548,6 +3862,7 @@ class DotVectorDB:
                 {
                     "src_id": source_entity_name,
                     "tgt_id": destination_entity_name,
+                    "original_rel_id": relation_id,
                     "description": relation_description,
                     "keywords": keywords,
                     "weight": float(len(chunk_ids)),
@@ -2572,151 +3887,148 @@ class DotVectorDB:
 
     async def export_DotRAG_to_HopRAG_Graph(
         self,
-        output_file="hoprag_hotpotqa.jsonl",
-    ) -> list[dict]:
-        """Export the DotRAG corpus as HopRAG-compatible HotpotQA JSONL.
-
-        HopRAG generates its own answerable and pending questions from the
-        passage text. Its HotpotQA builder uses each record's ``context`` to
-        determine which documents may be compared during edge construction.
-        This exporter therefore groups DotRAG sources into connected
-        components using their shared entities and relationships, while
-        leaving all QA ground-truth fields empty.
-        """
+        output_file="hoprag.db",
+    ) -> str:
+        """Copy DotRAG chunks and vectors into a standalone HopRAG database."""
         self.__require_open_connection()
 
-        async with self.lock:
-            source_cursor = await self.conn.execute(
-                """
-                SELECT id, name
-                FROM source
-                ORDER BY id
-                """
+        output_path = Path(output_file).expanduser().resolve()
+        source_path = Path(self.path).expanduser().resolve()
+        if output_path == source_path:
+            raise ValueError(
+                "The HopRAG export path must differ from the DotRAG database "
+                "path."
             )
-            source_rows = await source_cursor.fetchall()
-            await source_cursor.close()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        async with self.lock:
             chunk_cursor = await self.conn.execute(
                 """
                 SELECT chunk_id, source_id, content
                 FROM chunk
-                ORDER BY source_id, chunk_id
+                ORDER BY chunk_id
                 """
             )
             chunk_rows = await chunk_cursor.fetchall()
             await chunk_cursor.close()
-
-            entity_source_cursor = await self.conn.execute(
+            embedding_table_cursor = await self.conn.execute(
                 """
-                SELECT DISTINCT mapping.entity_id, chunk.source_id
-                FROM chunk_to_entity_mapping AS mapping
-                JOIN chunk ON mapping.chunk_id = chunk.chunk_id
-                ORDER BY mapping.entity_id, chunk.source_id
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = 'chunk_embeddings'
                 """
             )
-            entity_source_rows = await entity_source_cursor.fetchall()
-            await entity_source_cursor.close()
+            has_chunk_embeddings = (
+                await embedding_table_cursor.fetchone()
+            ) is not None
+            await embedding_table_cursor.close()
+            if not has_chunk_embeddings:
+                raise RuntimeError(
+                    "DotRAG does not contain a chunk_embeddings vector table."
+                )
 
-            relationship_source_cursor = await self.conn.execute(
+            embedding_cursor = await self.conn.execute(
                 """
-                SELECT DISTINCT mapping.relation_id, chunk.source_id
-                FROM chunk_to_relationship_mapping AS mapping
-                JOIN chunk ON mapping.chunk_id = chunk.chunk_id
-                ORDER BY mapping.relation_id, chunk.source_id
+                SELECT rowid, embedding
+                FROM chunk_embeddings
+                ORDER BY rowid
                 """
             )
-            relationship_source_rows = (
-                await relationship_source_cursor.fetchall()
-            )
-            await relationship_source_cursor.close()
+            embedding_rows = await embedding_cursor.fetchall()
+            await embedding_cursor.close()
 
-        source_names = dict(source_rows)
-        chunks_by_source = {source_id: [] for source_id in source_names}
-        for _, source_id, content in chunk_rows:
-            chunks_by_source.setdefault(source_id, []).append(content)
-
-        parent = {source_id: source_id for source_id in source_names}
-
-        def find(source_id):
-            while parent[source_id] != source_id:
-                parent[source_id] = parent[parent[source_id]]
-                source_id = parent[source_id]
-            return source_id
-
-        def union(first_source_id, second_source_id):
-            first_root = find(first_source_id)
-            second_root = find(second_source_id)
-            if first_root != second_root:
-                parent[second_root] = first_root
-
-        def connect_sources(rows):
-            sources_by_graph_item = {}
-            for graph_item_id, source_id in rows:
-                if source_id in parent:
-                    sources_by_graph_item.setdefault(
-                        graph_item_id,
-                        [],
-                    ).append(source_id)
-            for source_ids in sources_by_graph_item.values():
-                if len(source_ids) < 2:
-                    continue
-                first_source_id = source_ids[0]
-                for source_id in source_ids[1:]:
-                    union(first_source_id, source_id)
-
-        connect_sources(entity_source_rows)
-        connect_sources(relationship_source_rows)
-
-        components = {}
-        for source_id in source_names:
-            if chunks_by_source.get(source_id):
-                components.setdefault(find(source_id), []).append(source_id)
-
-        name_counts = {}
-        for source_name in source_names.values():
-            name_counts[source_name] = name_counts.get(source_name, 0) + 1
-
-        def hoprag_document_title(source_id):
-            source_name = source_names[source_id]
-            if name_counts[source_name] == 1:
-                return source_name
-            return f"{source_name} [{source_id}]"
-
-        records = []
-        ordered_components = sorted(
-            components.values(),
-            key=lambda source_ids: tuple(str(value) for value in source_ids),
-        )
-        for component_index, source_ids in enumerate(ordered_components, 1):
-            context = [
-                [
-                    hoprag_document_title(source_id),
-                    chunks_by_source[source_id],
-                ]
-                for source_id in source_ids
-            ]
-            records.append(
-                {
-                    "_id": f"dotrag-component-{component_index}",
-                    "answer": "",
-                    "question": "",
-                    "supporting_facts": [],
-                    "context": context,
-                    "type": "dotrag",
-                    "level": "unknown",
-                }
+        chunk_ids = {row[0] for row in chunk_rows}
+        embedding_ids = {row[0] for row in embedding_rows}
+        if embedding_ids != chunk_ids:
+            missing = sorted(chunk_ids - embedding_ids)
+            unexpected = sorted(embedding_ids - chunk_ids)
+            raise ValueError(
+                "DotRAG chunk vectors do not match the chunks being exported. "
+                f"Missing vector chunk IDs: {missing}; unexpected vector "
+                f"chunk IDs: {unexpected}."
             )
 
-        if output_file is not None:
-            output_path = Path(output_file).expanduser().resolve()
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("w", encoding="utf-8") as file:
-                for record in records:
-                    file.write(
-                        json.dumps(record, ensure_ascii=False) + "\n"
-                    )
+        hoprag_conn = await aiosqlite.connect(str(output_path))
+        try:
+            await hoprag_conn.enable_load_extension(True)
+            await hoprag_conn.load_extension(
+                str(BASE_DIR / "compiled_vec1" / "vec1.so")
+            )
+            await hoprag_conn.enable_load_extension(False)
+            await hoprag_conn.executescript(
+                """
+                DROP TABLE IF EXISTS chunk_embeddings;
+                DROP TABLE IF EXISTS edge_embeddings;
+                DROP TABLE IF EXISTS edge;
+                DROP TABLE IF EXISTS chunk;
 
-        return records
+                CREATE TABLE chunk (
+                    chunk_id INTEGER PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    keywords TEXT, 
+                    are_questions_extracted BOOLEAN,
+                    is_node_in_neo4j BOOLEAN
+                );
+
+                CREATE TABLE question (
+                    question_id INTEGER PRIMARY KEY,
+                    chunk_id INTEGER NOT NULL,
+                    question_type TEXT NOT NULL
+                        CHECK (question_type IN ('answerable', 'pending')),
+                    content TEXT NOT NULL,
+                    FOREIGN KEY (chunk_id) REFERENCES chunk(chunk_id),
+                    UNIQUE (chunk_id, question_type, content)
+                );
+
+                CREATE TABLE edge (
+                    edge_id INTEGER PRIMARY KEY,
+                    source_chunk_id INTEGER,
+                    target_chunk_id INTEGER,
+                    content TEXT,
+                    is_edge_in_neo4j BOOLEAN,
+                    FOREIGN KEY (source_chunk_id) REFERENCES chunk(chunk_id),
+                    FOREIGN KEY (target_chunk_id) REFERENCES chunk(chunk_id)
+                );
+
+                CREATE VIRTUAL TABLE chunk_embeddings
+                USING vec1(embedding);
+
+                CREATE VIRTUAL TABLE question_embeddings
+                USING vec1(embedding);
+
+                CREATE VIRTUAL TABLE edge_embeddings
+                USING vec1(embedding);
+                """
+            )
+            await hoprag_conn.executemany(
+                """
+                INSERT INTO chunk (
+                    chunk_id,
+                    source_id,
+                    content,
+                    are_questions_extracted,
+                    is_node_in_neo4j
+                )
+                VALUES (?, ?, ?, NULL, NULL)
+                """,
+                chunk_rows,
+            )
+            await hoprag_conn.executemany(
+                """
+                INSERT INTO chunk_embeddings(rowid, embedding)
+                VALUES (?, ?)
+                """,
+                embedding_rows,
+            )
+            await hoprag_conn.commit()
+        except Exception:
+            await hoprag_conn.rollback()
+            raise
+        finally:
+            await hoprag_conn.close()
+
+        return str(output_path)
 
     async def export_DotRAG_to_MS_GraphRAG_Graph(
         self,

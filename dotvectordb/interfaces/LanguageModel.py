@@ -26,16 +26,17 @@ class LanguageModel(ABC):
         pass
     
     async def generate(self, prompt: str, structuredInput=None) -> Dict[Any, Any]:
-        """Generates a response from the language model based on the provided prompt and structured input."""
+        """Return response, total, input, and output token counts."""
         try:
             if structuredInput is not None:
-                response, tokens = await self.call_llm(prompt, structuredInput)
+                response, total_tokens, input_tokens, output_tokens = (
+                    await self.call_llm(prompt, structuredInput)
+                )
             else:
-                response, tokens = await self.call_llm(prompt)
-            return response, tokens
+                response, total_tokens, input_tokens, output_tokens = (
+                    await self.call_llm(prompt)
+                )
+            return response, total_tokens, input_tokens, output_tokens
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(f"Error in the Language Model's interface in LanguageModel.py: {e}")
-    
-
-      

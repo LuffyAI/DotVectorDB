@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS chunk (
     are_entities_extracted BOOLEAN DEFAULT FALSE,
     are_relations_extracted BOOLEAN DEFAULT FALSE,
     are_types_discovered BOOLEAN DEFAULT FALSE,
+    tokens INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chunk_id),
     FOREIGN KEY (source_id) REFERENCES source(id) ON DELETE CASCADE,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
