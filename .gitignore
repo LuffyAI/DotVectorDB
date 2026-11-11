@@ -8,6 +8,9 @@ shrek.txt
 
 #.vscode folder
 .vscode/
+.agents/
+.aws/
+.codex/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -91,7 +94,14 @@ docs/_build/
 target/
 
 # Jupyter Notebook
+*.ipynb
 .ipynb_checkpoints
+
+# Generated test and benchmark runs
+*_test_runs/
+bitmap_profile_runs/
+/graph_construct_test/
+/structured_test/
 
 # IPython
 profile_default/

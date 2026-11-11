@@ -15,7 +15,7 @@ class OpenRouterEmbedding(EmbeddingModel):
         self,
         model_name: str = os.getenv("OPENROUTER_EMBEDDING_MODEL", "baai/bge-large-en-v1.5"),
         api_key: str = os.getenv("OPENROUTER_API_KEY"),
-        embedding_dim: int = os.getenv("OPENROUTER_EMBEDDING_DIM", 1536),
+        embedding_dim: int = os.getenv("OPENROUTER_EMBEDDING_DIM", 3072),
     ) -> None:
         super().__init__(
             model_name=model_name,

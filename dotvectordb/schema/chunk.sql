@@ -21,9 +21,19 @@ INSERT OR IGNORE INTO global_config (
     embedding_model_id,
     num_chunks,
     num_entities,
-    num_relations
+    num_relations,
+    total_chunk_tokens,
+    total_entity_tokens,
+    total_relationship_tokens,
+    average_chunk_tokens,
+    avg_entity_tokens,
+    avg_relationship_tokens,
+    avg_degree
 )
-VALUES (1, 0, 0, NULL, NULL, NULL, 0, 0, 0);
+VALUES (
+    1, 0, 0, NULL, NULL, NULL, 0, 0, 0,
+    0, 0, 0, 0.0, 0.0, 0.0, 0.0
+);
 /*********************************
 ----> Source <----
 Purpose: This file contains the source schema for the database. A source is a document that is ingested into the system and can be chunked into smaller pieces for processing. Each source has a unique id, name, and description. The description is a JSON object that can contain information such as the source's origin, content, and any other relevant details.
@@ -44,6 +54,10 @@ CREATE TABLE IF NOT EXISTS source (
     name TEXT NOT NULL,
     description JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_chunked BOOLEAN DEFAULT FALSE,
+    is_chunk_number_known BOOLEAN DEFAULT FALSE,
+    num_of_chunks_found INTEGER DEFAULT 0,
+    num_of_chunks_added INTEGER DEFAULT 0,
     num_chunks INT DEFAULT 0,
     num_entities INT DEFAULT 0,
     num_relations INT DEFAULT 0,
@@ -72,16 +86,26 @@ CREATE TABLE IF NOT EXISTS chunk (
     is_embedded BOOLEAN DEFAULT FALSE,
     are_entities_extracted BOOLEAN DEFAULT FALSE,
     are_relations_extracted BOOLEAN DEFAULT FALSE,
-    are_types_discovered BOOLEAN DEFAULT FALSE,
     tokens INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (chunk_id),
     FOREIGN KEY (source_id) REFERENCES source(id) ON DELETE CASCADE,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS chunk_to_sentence_mapping (
+    chunk_id INTEGER NOT NULL,
+    sentence_number INTEGER NOT NULL,
+    sentence_text TEXT NOT NULL,
+    PRIMARY KEY (chunk_id, sentence_number),
+    FOREIGN KEY (chunk_id)
+        REFERENCES chunk(chunk_id)
+        ON DELETE CASCADE
+);
+
 /*********************************
 ----> Increment/Decrement triggers <----
 Purpose: This these triggers are used to automatically update the num_chunks field in the source table when chunks are added or removed from the chunk table:
-In each of these operations, we must increment global_config's current_version_count by 1 to ensure that the database version is updated after each write operation.
+Chunk inserts and deletes update counts and token statistics without changing the graph version.
 - increment_source_num_chunks: This trigger is fired after a chunk is inserted into the chunk table. It increments the num_chunks field in the source table for the corresponding source_id.
 - decrement_source_num_chunks: This trigger is fired after a chunk is deleted from the chunk table. It decrements the num_chunks field in the source table for the corresponding source_id.
 *********************************/
@@ -89,15 +113,21 @@ CREATE TRIGGER IF NOT EXISTS increment_source_num_chunks
 AFTER INSERT ON chunk
 BEGIN
     UPDATE source
-    SET num_chunks = num_chunks + 1 
+    SET num_chunks = num_chunks + 1,
+        num_of_chunks_added = num_of_chunks_added + 1
     WHERE id = NEW.source_id;
 
     UPDATE global_config
-    SET num_chunks = num_chunks + 1
+    SET average_chunk_tokens =
+            CAST(
+                COALESCE(total_chunk_tokens, 0) + NEW.tokens
+                AS REAL
+            ) / (COALESCE(num_chunks, 0) + 1),
+        total_chunk_tokens =
+            COALESCE(total_chunk_tokens, 0) + NEW.tokens,
+        num_chunks = COALESCE(num_chunks, 0) + 1
     WHERE id = 1;
 
-    UPDATE global_config
-    SET current_version_count = current_version_count + 1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS decrement_source_num_chunks
@@ -108,9 +138,105 @@ BEGIN
     WHERE id = OLD.source_id;
 
     UPDATE global_config
-    SET num_chunks = MAX(num_chunks - 1, 0)
+    SET average_chunk_tokens =
+            CASE
+                WHEN COALESCE(num_chunks, 0) <= 1 THEN 0.0
+                ELSE CAST(
+                    MAX(
+                        COALESCE(total_chunk_tokens, 0) - OLD.tokens,
+                        0
+                    ) AS REAL
+                ) / (num_chunks - 1)
+            END,
+        total_chunk_tokens = MAX(
+            COALESCE(total_chunk_tokens, 0) - OLD.tokens,
+            0
+        ),
+        num_chunks = MAX(COALESCE(num_chunks, 0) - 1, 0)
     WHERE id = 1;
 
+END;
+
+CREATE TRIGGER IF NOT EXISTS update_global_chunk_token_stats
+AFTER UPDATE OF tokens ON chunk
+WHEN NEW.tokens <> OLD.tokens
+BEGIN
     UPDATE global_config
-    SET current_version_count = current_version_count + 1;
+    SET average_chunk_tokens =
+            CASE
+                WHEN COALESCE(num_chunks, 0) = 0 THEN 0.0
+                ELSE CAST(
+                    COALESCE(total_chunk_tokens, 0)
+                    + NEW.tokens
+                    - OLD.tokens
+                    AS REAL
+                ) / num_chunks
+            END,
+        total_chunk_tokens = MAX(
+            COALESCE(total_chunk_tokens, 0)
+            + NEW.tokens
+            - OLD.tokens,
+            0
+        )
+    WHERE id = 1;
+END;
+
+-- Inspect this chunk's mappings before foreign-key cascades remove them.
+CREATE TRIGGER IF NOT EXISTS delete_unsupported_chunk_graph
+BEFORE DELETE ON chunk
+BEGIN
+    DELETE FROM relationship
+    WHERE relation_id IN (
+        SELECT relation_id FROM chunk_to_relationship_mapping
+        WHERE chunk_id = OLD.chunk_id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM chunk_to_relationship_mapping AS support
+        WHERE support.relation_id = relationship.relation_id
+          AND support.chunk_id <> OLD.chunk_id
+    );
+
+    UPDATE relationship
+    SET supporting_lines = json_remove(
+        supporting_lines, '$."' || OLD.chunk_id || '"'
+    )
+    WHERE relation_id IN (
+        SELECT relation_id FROM chunk_to_relationship_mapping
+        WHERE chunk_id = OLD.chunk_id
+    )
+    AND json_type(supporting_lines, '$."' || OLD.chunk_id || '"') IS NOT NULL;
+
+    DELETE FROM entity
+    WHERE entity_id IN (
+        SELECT entity_id FROM chunk_to_entity_mapping
+        WHERE chunk_id = OLD.chunk_id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM chunk_to_entity_mapping AS support
+        WHERE support.entity_id = entity.entity_id
+          AND support.chunk_id <> OLD.chunk_id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship
+        WHERE src_entity_id = entity.entity_id
+           OR dst_entity_id = entity.entity_id
+    );
+
+    -- Entity deletions above already adjusted their source counts. Account
+    -- for remaining mappings now, before this chunk disappears in the cascade.
+    UPDATE source
+    SET num_entities = MAX(num_entities - (
+        SELECT COUNT(*)
+        FROM chunk_to_entity_mapping AS mapping
+        WHERE mapping.chunk_id = OLD.chunk_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM chunk_to_entity_mapping AS other
+              JOIN chunk ON chunk.chunk_id = other.chunk_id
+              WHERE other.entity_id = mapping.entity_id
+                AND other.chunk_id <> OLD.chunk_id
+                AND chunk.source_id = OLD.source_id
+          )
+    ), 0)
+    WHERE id = OLD.source_id;
 END;

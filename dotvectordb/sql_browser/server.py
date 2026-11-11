@@ -11,7 +11,7 @@ import aiosqlite
 from aiohttp import web
 
 from dotvectordb.web_interface.server import GraphInterfaceServer
-from dotvectordb.prompts.chatbot_prompts import (
+from dotvectordb.construction_prompts.chatbot_prompts import (
     CHATBOT_RESPONSE_PROMPT,
     CHATBOT_ROUTING_PROMPT,
 )

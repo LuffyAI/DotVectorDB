@@ -23,10 +23,24 @@ Purpose: This file contains the schema for the global_config metadata in the dat
 - description: The global description serves to provide a global paragraph description of the contents the database holds.
 - DIM: This is the dimension of the embedding model used in the database.
 - embedding_model_id: This is the ID of the embedding model used to generate embeddings for the database. It is a foreign key that references the id in the embedding_model table.
+- total_chunk_tokens: Sum of the tokens stored across all chunks.
+- total_entity_tokens: Sum of the tokens stored across all entities.
+- total_relationship_tokens: Sum of the tokens stored across all relationships.
+- average_chunk_tokens: Average number of tokens stored per chunk.
+- avg_entity_tokens: Average number of tokens stored per entity.
+- avg_relationship_tokens: Average number of tokens stored per relationship.
+- avg_degree: Average entity degree in the graph.
 *********************************/
 CREATE TABLE IF NOT EXISTS global_config (
     id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     current_version_count INTEGER NOT NULL,
+    bitmap_in_progress BOOLEAN NOT NULL DEFAULT FALSE,
+    entity_bm25_in_progress BOOLEAN NOT NULL DEFAULT FALSE,
+    relationship_bm25_in_progress BOOLEAN NOT NULL DEFAULT FALSE,
+    bitmap_phase_checkpoints JSON NOT NULL DEFAULT '{}',
+    bitmap_pending_inputs JSON NOT NULL DEFAULT '{}',
+    new_entities JSON NOT NULL DEFAULT '[]',
+    updated_entities JSON NOT NULL DEFAULT '[]',
     description_version INTEGER NOT NULL,
     description JSON,
     DIM INTEGER,
@@ -34,6 +48,15 @@ CREATE TABLE IF NOT EXISTS global_config (
     num_chunks INTEGER,
     num_entities INTEGER,
     num_relations INTEGER,
+    total_chunk_tokens INTEGER NOT NULL DEFAULT 0,
+    total_entity_tokens INTEGER NOT NULL DEFAULT 0,
+    total_relationship_tokens INTEGER NOT NULL DEFAULT 0,
+    average_chunk_tokens REAL NOT NULL DEFAULT 0.0,
+    avg_entity_tokens REAL NOT NULL DEFAULT 0.0,
+    avg_relationship_tokens REAL NOT NULL DEFAULT 0.0,
+    avg_degree REAL NOT NULL DEFAULT 0.0,
+    max_degree INTEGER NOT NULL DEFAULT 0,
+    min_degree INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_model(id) ON DELETE SET NULL
 );
 /*********************************

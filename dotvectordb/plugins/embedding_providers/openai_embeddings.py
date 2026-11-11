@@ -15,7 +15,7 @@ class OpenAIEmbeddingModel(EmbeddingModel):
         self,
         model_name: str = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"),
         api_key: str = os.getenv("OPENAI_API_KEY"),
-        embedding_dim: int = os.getenv("OPENAI_EMBEDDING_DIM", 1536),
+        embedding_dim: int = os.getenv("OPENAI_EMBEDDING_DIM", 3072),
         Tokenizer: str = os.getenv("OPENAI_TOKENIZER", "gpt-4o"),
     ) -> None:
         super().__init__(

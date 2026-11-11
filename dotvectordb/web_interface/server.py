@@ -445,3 +445,4 @@ class GraphInterfaceServer:
 async def open_graph_interface(dotvdb, port=8765, host="127.0.0.1", open_browser=True):
     server = GraphInterfaceServer(dotvdb=dotvdb, host=host, port=port)
     return await server.start(open_browser=open_browser)
+

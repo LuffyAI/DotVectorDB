@@ -1,7 +1,7 @@
 import asyncio
 import json
 from tqdm.asyncio import tqdm_asyncio
-from dotvectordb.prompts.global_desc_prompt import (
+from dotvectordb.construction_prompts.global_desc_prompt import (
     GLOBAL_CHUNK_PROMPT,
     GLOBAL_DESCRIPTION_PROMPT,
     GLOBAL_TYPE_PROMPT,

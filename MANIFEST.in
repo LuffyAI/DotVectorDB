@@ -1,0 +1,8 @@
+include README.MD
+include dotvectordb/compiled_vec1/Makefile
+include dotvectordb/compiled_vec1/build.py
+include dotvectordb/compiled_vec1/headers/*.h
+include dotvectordb/compiled_vec1/original_files/ext/vec1/vec1.c
+include dotvectordb/compiled_vec1/original_files/manifest.uuid
+include dotvectordb/data_structures/bitmap/_bitmap_bfs.pyx
+global-exclude *.so
