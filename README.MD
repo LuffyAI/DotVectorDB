@@ -192,3 +192,22 @@ The default Vec1 compiler flags include `-march=native`: build on the target mac
 ## Status
 
 DotVectorDB is a research project under active development. APIs and schemas can change between revisions. Performance depends on graph structure, storage, models, and the index configuration; this README does not claim a universal benchmark result.
+
+## Citation
+
+If you use the DotRAG retrieval algorithm or build on DotVectorDB in your research, please cite our paper:
+
+**[DotRAG: Retrieval-Time Reasoning Along Relational Paths](https://arxiv.org/abs/2605.18760)**  
+Larnell Moore, Naihao Deng, Rada Mihalcea, and Farnaz Jahanbakhsh. arXiv, 2026.
+
+```bibtex
+@misc{moore2026dotrag,
+  title         = {{DotRAG}: Retrieval-Time Reasoning Along Relational Paths},
+  author        = {Moore, Larnell and Deng, Naihao and Mihalcea, Rada and Jahanbakhsh, Farnaz},
+  year          = {2026},
+  eprint        = {2605.18760},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.IR},
+  url           = {https://arxiv.org/abs/2605.18760}
+}
+```
