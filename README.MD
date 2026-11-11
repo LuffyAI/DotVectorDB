@@ -193,6 +193,8 @@ The default Vec1 compiler flags include `-march=native`: build on the target mac
 
 DotVectorDB is a research project under active development. APIs and schemas can change between revisions. Performance depends on graph structure, storage, models, and the index configuration; this README does not claim a universal benchmark result.
 
+A PyPI release for installation with `pip install dotvectordb` is planned once development is complete.
+
 ## Citation
 
 If you use the DotRAG retrieval algorithm or build on DotVectorDB in your research, please cite our paper:
