@@ -98,6 +98,7 @@ target/
 .ipynb_checkpoints
 
 # Generated test and benchmark runs
+/tests/
 *_test_runs/
 bitmap_profile_runs/
 /graph_construct_test/
